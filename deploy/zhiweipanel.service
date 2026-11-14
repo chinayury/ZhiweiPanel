@@ -1,0 +1,43 @@
+[Unit]
+Description=ZhiweiPanel - 轻量建站面板
+Documentation=https://github.com/zhiwei/panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# nginx 需 root 权限执行 nginx -t 与 reload
+User=root
+WorkingDirectory=/opt/zhiweipanel
+
+# 初始管理员口令放在 600 权限的 EnvironmentFile 里，**不要**写进本文件：
+# systemd 的 unit 文件默认全局可读，写进去等于把管理员口令公开。
+# 文件不存在时用 '-' 前缀忽略（面板会在首次启动时生成默认管理员）。
+EnvironmentFile=-/etc/zhiweipanel/zhiweipanel.env
+
+ExecStart=/opt/zhiweipanel/zhiweipanel \
+  -port 8888 \
+  -runtime host \
+  -data /opt/zhiweipanel/data \
+  -conf /opt/zhiweipanel/nginx/conf.d \
+  -site-conf /opt/zhiweipanel/nginx/conf.d \
+  -nginx /usr/sbin/nginx \
+  -admin admin \
+  -admin-pass '${ZW_ADMIN_PASS}'
+
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# 日志输出到 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zhiweipanel
+
+# 基础加固
+NoNewPrivileges=false
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

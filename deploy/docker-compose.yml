@@ -1,0 +1,57 @@
+# ZhiweiPanel 一键部署编排
+#
+# 默认端口：
+#   面板   8888
+#   HTTP   80
+#   HTTPS  443
+# 需要改端口时直接改下面的 .env 或 ports 映射即可。
+
+services:
+  zhiweipanel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.3}
+    image: zhiweipanel:${VERSION:-0.1.3}
+    container_name: zhiweipanel
+    restart: unless-stopped
+
+    # 面板以 root 运行：需要执行 nginx -t / reload
+    user: root
+
+    ports:
+      - "${PANEL_PORT:-8888}:8888"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+
+    environment:
+      - TZ=Asia/Shanghai
+
+    volumes:
+      # 站点数据
+      - site-data:/opt/zhiweipanel/data
+      # nginx 配置（面板生成）
+      - nginx-conf:/etc/nginx/conf.d
+      # 站点根目录
+      - wwwroot:/www/wwwroot
+
+    command:
+      - -port=8888
+      - -runtime=host
+      - -data=/opt/zhiweipanel/data
+      - -conf=/etc/nginx/conf.d
+      - -site-conf=/etc/nginx/conf.d
+      - -nginx=/usr/sbin/nginx
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8888/api/auth/me"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  site-data:
+  nginx-conf:
+  wwwroot:

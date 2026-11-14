@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: gofmt
+        shell: bash
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "以下文件需要 gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  docker:
+    name: Docker build + health check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t zhiweipanel:ci -f deploy/Dockerfile .
+
+      - name: Run container and health check
+        run: |
+          set -euo pipefail
+          docker run -d --name zhiweipanel-ci -p 18888:8888 zhiweipanel:ci
+          trap 'docker rm -f zhiweipanel-ci >/dev/null 2>&1 || true' EXIT
+
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18888/api/auth/me || true)
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 1
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "健康检查失败，最后状态码: ${code:-无}"
+            docker logs zhiweipanel-ci
+            exit 1
+          fi
+          echo "health check passed"
+          docker logs zhiweipanel-ci

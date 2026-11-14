@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>智维面板 ZhiweiPanel 控制台</title>
+  <!-- 在样式表之前应用已保存的主题，避免首屏闪一下错误的配色 -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('zhiweipanel_theme');
+        if (t === 'dark' || t === 'light') {
+          document.documentElement.dataset.theme = t;
+        }
+      } catch (e) { /* 隐私模式下用默认浅色 */ }
+    })();
+  </script>
+  <!-- 静态资源，全部本地，无任何外部 CDN 依赖 -->
+  <link rel="stylesheet" href="./css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f81f7'/><text x='16' y='22' font-size='16' font-family='monospace' fill='white' text-anchor='middle'>Z</text></svg>">
+</head>
+<body>
+  <!-- 应用挂载点：app.js 在此渲染登录页或主框架 -->
+  <div id="app">
+    <div class="boot-loading">
+      <div class="spinner spinner-lg"></div>
+      <div class="boot-text">正在加载 智维面板…</div>
+    </div>
+  </div>
+
+  <noscript>
+    <div class="boot-loading">智维面板控制台需要启用 JavaScript 才能运行。</div>
+  </noscript>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
