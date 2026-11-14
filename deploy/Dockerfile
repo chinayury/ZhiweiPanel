@@ -38,11 +38,28 @@ RUN mkdir -p /var/lib/nginx/tmp /var/log/nginx /www/wwwroot /opt/zhiweipanel/dat
 
 COPY --from=builder /out/zhiweipanel /usr/local/bin/zhiweipanel
 
+# alpine 的默认 nginx.conf 把 `include /etc/nginx/conf.d/*.conf` 放在
+# **root context**（http 块之外），而面板下发的配置里既有 http 级指令
+# （log_format / limit_req_zone）也有 server 块，只能出现在 http {} 内。
+# 直接挂载会直接报 "log_format" directive is not allowed here。
+# 改用本仓库维护的 nginx.conf（conf.d 挪进 http {}，pid 路径显式固定）。
+COPY deploy/nginx.conf /etc/nginx/nginx.conf
+
+# alpine 自带的 /etc/nginx/http.d/default.conf 是 :80 上的 default_server，
+# 与面板下发的 catch-all 冲突（重复定义 default server），镜像构建阶段就删掉。
+RUN rm -f /etc/nginx/http.d/default.conf
+
+# 入口脚本：先拉起容器内 nginx，再 exec 面板本体。
+# 面板只做「下发配置 → nginx -t → reload」，从不 start nginx；
+# 容器里也没有 systemd，没有这个脚本镜像内就没有 nginx 进程。
+COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 8888 80 443
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD curl -fsS http://127.0.0.1:8888/api/auth/me || exit 1
 
-ENTRYPOINT ["/usr/local/bin/zhiweipanel"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["-port", "8888", "-runtime", "host", "-data", "/opt/zhiweipanel/data", "-conf", "/etc/nginx/conf.d"]

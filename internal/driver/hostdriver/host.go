@@ -128,8 +128,13 @@ func (d *Driver) NginxStatus(ctx context.Context) (driver.NginxStatus, error) {
 		_, _, e := d.run(ctx, "systemctl", "is-active", d.unitName)
 		if e == nil {
 			st.Running = true
-		} else if _, err := os.Stat(d.pidFile()); err == nil {
-			st.Running = true
+		} else {
+			for _, p := range nginxPidFiles {
+				if _, err := os.Stat(p); err == nil {
+					st.Running = true
+					break
+				}
+			}
 		}
 	}
 
@@ -141,9 +146,15 @@ func (d *Driver) NginxStatus(ctx context.Context) (driver.NginxStatus, error) {
 	return st, nil
 }
 
-func (d *Driver) pidFile() string {
-	return "/run/nginx.pid"
-}
+// nginxPidFiles 是 nginx pid 文件的候选路径。
+//
+// Debian/Ubuntu 打包默认写 /run/nginx.pid；alpine 打包把它改成了
+// /run/nginx/nginx.pid（容器内实测的报错信息即指向该路径）。
+//
+// 两者都得认：容器里没有 systemd，`systemctl is-active` 必然失败，
+// pid 文件是唯一可用的运行状态兜底。只认 Debian 那条路径，会让
+// Docker 模式下状态页把正在运行的 nginx 永远显示成"未运行"。
+var nginxPidFiles = []string{"/run/nginx.pid", "/run/nginx/nginx.pid"}
 
 func (d *Driver) NginxTest(ctx context.Context) (bool, string, error) {
 	if _, err := exec.LookPath(d.nginxBin); err != nil {

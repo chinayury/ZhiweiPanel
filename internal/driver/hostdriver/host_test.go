@@ -40,6 +40,23 @@ func TestPHPSocketNameVariants(t *testing.T) {
 	}
 }
 
+// TestNginxPidFilesCoversDebianAndAlpine 锁死 pid 文件候选覆盖两种发行版。
+//
+// 只认 /run/nginx.pid 时，alpine（Docker 镜像用的就是这个）里的 nginx
+// 明明在跑，状态页却显示"未运行"——容器没有 systemd，pid 文件是唯一兜底。
+func TestNginxPidFilesCoversDebianAndAlpine(t *testing.T) {
+	// 两种发行版的 pid 路径都必须在候选列表里，且顺序固定。
+	want := []string{"/run/nginx.pid", "/run/nginx/nginx.pid"}
+	if len(nginxPidFiles) != len(want) {
+		t.Fatalf("候选路径应为 %d 个，实际 %d 个：%v", len(want), len(nginxPidFiles), nginxPidFiles)
+	}
+	for i, p := range want {
+		if nginxPidFiles[i] != p {
+			t.Errorf("候选路径[%d] = %q，期望 %q", i, nginxPidFiles[i], p)
+		}
+	}
+}
+
 // TestDefaultPHPGlobCoversBothForms 默认 glob 必须同时覆盖两种命名。
 func TestDefaultPHPGlobCoversBothForms(t *testing.T) {
 	d := New(Config{})
