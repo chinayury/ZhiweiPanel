@@ -1,0 +1,86 @@
+name: Release
+
+# 推送 v* 标签触发：构建 linux 静态二进制 → 创建 Release → 清理旧附件。
+#
+# 设计约束（与仓库既有约定对齐）：
+#   - 产物名 `zhiweipanel-<version>-linux-<arch>` 必须与 deploy/install.sh
+#     的 BIN_URL 示例一致（安装脚本按这个名字 curl 下载）。
+#   - 本文件不写死任何面板版本号（版本门禁 internal/version 会扫描 .yml），
+#     版本一律从 tag 推导：v0.1.4 -> 0.1.4。
+#   - 只删历史 Release 的**附件**，Release 记录与 Tag 一律保留
+#     （本仓库「只保留最新程序包」的发布策略 + 安全红线）。
+#   - 不发布 GHCR 镜像：部署形态是源码构建，暂无镜像拉取需求
+#     （理由见 docs/RESEARCH-BORROW-v0.1.4.md 第二节 A）。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build binaries and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      # --generate-notes 需要 Git 上下文与完整历史，必须 checkout 且 fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build linux binaries (amd64 + arm64)
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VER="${REF#v}"
+          echo "version=${VER}" >> "$GITHUB_ENV"
+          echo "building zhiweipanel ${VER} for linux amd64/arm64"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath \
+                -ldflags "-s -w -X main.Version=${VER}" \
+                -o "zhiweipanel-${VER}-linux-${arch}" .
+          done
+          sha256sum zhiweipanel-* > checksums.txt
+          ls -l zhiweipanel-* checksums.txt
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$REF" \
+            --title "ZhiweiPanel ${REF}" \
+            --generate-notes \
+            --verify-tag
+          # --clobber：同名附件覆盖上传（幂等重放不产生重复附件）
+          gh release upload "$REF" zhiweipanel-* checksums.txt --clobber
+          gh release view "$REF" --json assets --jq '.assets[].name'
+
+      # 只保留最新程序包：删除历史 Release 的附件，Release 记录与 Tag 保留。
+      # 首个 Release 时没有任何历史 Release，本步骤为空操作。
+      - name: Delete assets of previous releases (records are kept)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          asset_ids=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate \
+            | jq -r --arg cur "$REF" '.[] | select(.tag_name != $cur) | .assets[] | .id')
+          if [ -z "$asset_ids" ]; then
+            echo "no previous release assets to clean"
+            exit 0
+          fi
+          for asset_id in $asset_ids; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+            echo "deleted old release asset ${asset_id}"
+          done

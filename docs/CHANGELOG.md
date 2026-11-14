@@ -36,6 +36,41 @@
 
 ---
 
+## v0.1.4 — 修复：Docker 部署开箱即用；新增发布流水线（2026-11-14）
+
+**定位**：缺陷修复 + 交付层建设。项目公开后的**首个带 Tag 与 Release 产物的版本**
+（此前 `0.1.x` 各版只有源码，没有可下载的二进制）。无新增用户可见功能、无破坏性变更。
+
+### 修复
+
+| # | 问题 | 根因 | 修复 |
+|---|------|------|------|
+| 1 | Docker 构建在 `go mod download` 阶段失败，文档里的 Docker 部署路径不可用 | `go.mod` 要求 go ≥ 1.26.10（GO-2026-6809），Dockerfile 仍是 `golang:1.24-alpine`，且官方 golang 镜像 `GOTOOLCHAIN=local` 不会自动下载工具链 | 基础镜像升到 `golang:1.26-alpine`（`d9b5f5e`） |
+| 2 | 镜像内没有 nginx 进程，首屏配置下发必然失败（`invalid PID number ""`） | 面板只负责「下发配置 → `nginx -t` → reload」，从不 start nginx；容器里也没有 systemd | 新增 `deploy/docker-entrypoint.sh`：入口先拉起 nginx 再 exec 面板；nginx 启动失败只告警不阻断（`0fc117c`） |
+| 3 | `nginx -t` 报 `"log_format" directive is not allowed here` | alpine 的 nginx.conf 把 `include /etc/nginx/conf.d/*.conf` 放在 root context，而面板下发的配置含 http 级指令（log_format / limit_req_zone）与 server 块 | 镜像内置 `deploy/nginx.conf`：include 移入 `http {}`，pid 显式固定 `/run/nginx/nginx.pid`（`0fc117c`） |
+| 4 | `nginx -t` 报 `duplicate default server` | alpine 自带 `http.d/default.conf`（:80 上的 default_server），与面板下发的 catch-all 冲突 | 镜像构建期删除该文件（`0fc117c`） |
+| 5 | 状态页把运行中的 nginx 显示成「未运行」 | 运行状态兜底只认 Debian 的 `/run/nginx.pid`，alpine 打包是 `/run/nginx/nginx.pid`；容器内没有 systemd，pid 文件是唯一探测手段 | `internal/driver/hostdriver` 增加 pid 候选路径（`0fc117c`） |
+| 6 | CI 在 Windows 上 gofmt 把全部 108 个 .go 文件误报为未格式化 | GitHub Windows runner 默认 `autocrlf=true`，检出即 CRLF，而 gofmt 只认 LF | 新增 `.gitattributes`（`* text=auto eol=lf`）（`c6d61fa`） |
+| 7 | CI 在 macOS 上 `TestListNewestFirst` 稳定失败（快照目录互相覆盖） | `confhistory.randomSuffix` 用 `time.Now().UnixNano()%10000` 做目录名后缀；macOS 微秒级时钟下相隔 20ms 的快照后缀完全相同，同秒内目录名撞车 | 改用 `crypto/rand` 生成 8 位十六进制后缀（`c6d61fa`） |
+
+### 新增
+
+- **发布流水线** `.github/workflows/release.yml`：推送 `v*` 标签自动构建
+  linux amd64/arm64 静态二进制（`CGO_ENABLED=0` + SHA-256 校验和），创建 GitHub
+  Release（`--generate-notes`），并删除历史 Release 的旧附件（**Release 记录与 Tag 保留**）。
+  产物命名 `zhiweipanel-<version>-linux-<arch>` 与 `deploy/install.sh` 的 `BIN_URL`
+  约定一致；工作流本身不写死版本号（版本从 tag 推导，受 `internal/version` 门禁约束）。
+  不发布 GHCR 镜像——部署形态是源码构建，理由见
+  [RESEARCH-BORROW-v0.1.4.md](RESEARCH-BORROW-v0.1.4.md) 第二节 A。
+
+### 兼容性说明
+
+- 无破坏性变更；直接替换二进制 + 重启即可升级（Docker 部署需重新
+  `docker compose up -d --build`，镜像内 nginx 配置布局已变更）。
+- 面板数据（SQLite、证书、备份）与配置格式不变。
+
+---
+
 ## v0.1.3 — 修复：整站反代时 force_https 的 301 跳转被静默丢弃（2026-11-01）
 
 **定位**：纯缺陷修复版本。无新功能、无破坏性变更，直接替换二进制 + 重启即可升级。

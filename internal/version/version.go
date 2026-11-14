@@ -30,10 +30,14 @@ package version
 // v0.1.3 = 修复整站反代时 force_https 的 301 跳转被静默丢弃
 // （buildLocation 提前返回，跳转指令无处可写；改为补写进接管的
 // location ^~ / 内）。
+// v0.1.4 = 项目公开后的首个带 Tag 与 Release 产物的版本：修复 Docker
+// 部署开箱即用（镜像入口拉起 nginx、conf.d include 移入 http 块、
+// 删除发行版默认站点、pid 探测兼容 alpine）、CI 修复（Go 版本对齐、
+// CRLF 归一、快照 ID 真随机），并新增 tag 触发的发布流水线。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.1.3"
+const Version = "0.1.4"
 
 // History 已经发布过的历史版本号。
 //
@@ -55,6 +59,7 @@ var History = []string{
 	"0.1.2",
 	"0.2.1",
 	"0.2.2",
+	"0.1.3",
 }
 
 // All 返回当前版本与全部历史版本号。
