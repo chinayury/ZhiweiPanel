@@ -4,7 +4,10 @@
 # 内含 nginx + 面板本体，站点目录与配置通过 volume 挂载持久化。
 
 # ---------- 构建阶段 ----------
-FROM golang:1.24-alpine AS builder
+# go.mod 要求 go >= 1.26.10（GO-2026-6809：crypto/x509 信任被攻陷的中间 CA）。
+# 官方 golang 镜像默认 GOTOOLCHAIN=local，不会自动下载工具链，
+# 基础镜像必须本身满足 go.mod 的版本要求。
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
