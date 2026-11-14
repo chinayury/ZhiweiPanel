@@ -1,0 +1,22 @@
+# 统一换行符为 LF。
+#
+# GitHub 的 Windows runner 默认 core.autocrlf=true，检出后所有文本文件变成 CRLF，
+# 而 gofmt 只认 LF —— CI 的 gofmt 步骤会把整个仓库误报成"需要格式化"。
+# 在仓库层面钉死 LF，比在每个 CI 步骤里改 git 配置更可靠。
+* text=auto eol=lf
+
+# 二进制文件不做换行符转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.so binary
+*.db binary

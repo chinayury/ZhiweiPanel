@@ -17,6 +17,7 @@
 package confhistory
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -263,12 +264,21 @@ func validateID(id string) error {
 	return nil
 }
 
-// randomSuffix 生成 4 位随机后缀，避免同一秒内两次快照撞目录名。
+// randomSuffix 生成 8 位十六进制随机后缀，避免同一秒内多次快照撞目录名。
+//
+// 早期实现用 time.Now().UnixNano() % 10000 做后缀，注释写的是"区分同一秒内的
+// 两次快照"。但这不成立：macOS 的时钟精度是微秒级，纳秒尾数恒为 1000 的倍数，
+// 于是相隔 20ms 的两次快照 ns%10000 完全相等 → 目录名撞车 → 后一份快照覆盖
+// 前一份（CI 在 macOS 上稳定复现 "list len = 2, want 3"）。
+//
+// 后缀不承载任何安全语义，但必须是**真随机**才能保证唯一。
 func randomSuffix() string {
-	// 用时间纳秒的后四位做后缀即可，不需要密码学强度——
-	// 它只用于区分同一秒内的两次快照，不承载任何安全语义。
-	ns := time.Now().UnixNano() % 10000
-	return strconv.FormatInt(ns, 10)
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand 不可用极罕见；退回纳秒尾数，至少还能产出 ID。
+		return strconv.FormatInt(time.Now().UnixNano()%10000, 10)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // ---------------------------------------------------------------------------
