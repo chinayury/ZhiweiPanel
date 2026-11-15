@@ -34,10 +34,13 @@ package version
 // 部署开箱即用（镜像入口拉起 nginx、conf.d include 移入 http 块、
 // 删除发行版默认站点、pid 探测兼容 alpine）、CI 修复（Go 版本对齐、
 // CRLF 归一、快照 ID 真随机），并新增 tag 触发的发布流水线。
+// v0.1.5 = 文档与交付加固：README 已知限制勘误（#14/#15 描述的 UI
+// 断点经实机核实早已实现，属文档漂移，移除后 16 条 → 14 条）、
+// 新增面向 AI agent 的 docs/AGENT.md、CI Docker job 增加 nginx 存活断言。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.1.4"
+const Version = "0.1.5"
 
 // History 已经发布过的历史版本号。
 //
@@ -60,6 +63,7 @@ var History = []string{
 	"0.2.1",
 	"0.2.2",
 	"0.1.3",
+	"0.1.4",
 }
 
 // All 返回当前版本与全部历史版本号。

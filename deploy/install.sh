@@ -17,7 +17,7 @@
 #   MYSQL_ROOT_PASS MariaDB root 密码；留空则生成 24 位随机串并写入
 #                   ${INSTALL_DIR}/data/mysql-root.cnf（权限 0600）
 #   BIN_URL         二进制下载地址（必填，例：
-#                   BIN_URL=https://example.com/zhiweipanel-0.1.4-linux-amd64）
+#                   BIN_URL=https://example.com/zhiweipanel-0.1.5-linux-amd64）
 
 set -euo pipefail
 
@@ -247,7 +247,7 @@ BIN_URL="${BIN_URL:-}"
 
 if [[ -z "$BIN_URL" ]]; then
     error "请通过环境变量指定二进制下载地址，例如："
-    echo "    BIN_URL=https://example.com/zhiweipanel-0.1.4-linux-amd64 bash $0"
+    echo "    BIN_URL=https://example.com/zhiweipanel-0.1.5-linux-amd64 bash $0"
     exit 1
 fi
 

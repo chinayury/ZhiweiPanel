@@ -73,4 +73,19 @@ jobs:
             exit 1
           fi
           echo "health check passed"
+
+          # 面板 API 200 ≠ 容器内 nginx 活着：面板只负责 reload、从不 start nginx。
+          # 补三条断言，防止部署配置回退（入口脚本 / nginx.conf 改坏后 CI 依然全绿的事故形态）：
+          #   1. pid 文件里的 master 进程存活；
+          #   2. nginx -t 通过（配置布局没被改坏）；
+          #   3. 启动日志没有「初始配置下发失败」。
+          docker exec zhiweipanel-ci sh -c 'kill -0 "$(cat /run/nginx/nginx.pid)"'
+          docker exec zhiweipanel-ci nginx -t
+          if docker logs zhiweipanel-ci 2>&1 | grep -q "初始配置下发失败"; then
+            echo "startup config apply failed"
+            docker logs zhiweipanel-ci
+            exit 1
+          fi
+          echo "nginx process and config assertions passed"
+
           docker logs zhiweipanel-ci

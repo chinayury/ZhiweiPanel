@@ -19,7 +19,7 @@ COPY . .
 
 # CGO_ENABLED=0 产出纯静态二进制，可直接放进 scratch/alpine
 # -s -w 去除符号表，显著减小体积
-ARG VERSION=0.1.4
+ARG VERSION=0.1.5
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
         -ldflags "-s -w -X main.Version=${VERSION}" \
