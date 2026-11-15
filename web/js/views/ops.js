@@ -299,6 +299,14 @@ function drawAudit(box) {
   box.appendChild(sectionTitle('操作审计',
     `记录所有写操作与登录事件，共 ${state.logTotal} 条（表内最多保留 5000 条，超出自动清理最旧的）。`));
 
+  // 导出走 window.open 让浏览器带着会话 Cookie 下载（与备份下载同一套路），
+  // 文件名由后端 Content-Disposition 决定（zhiweipanel-audit-<时间>.<格式>）。
+  // 导出动作本身会被后端记成 audit.export——包括用 Token 导出的。
+  box.appendChild(h('div', { class: 'inline-actions' }, [
+    button('导出 CSV', () => exportAudit('csv'), 'default', 'download'),
+    button('导出 JSON', () => exportAudit('json'), 'default', 'download'),
+  ]));
+
   if (!state.logs.length) {
     box.appendChild(emptyState('暂无审计记录', null, 'logs'));
     return;
@@ -336,6 +344,14 @@ function drawAudit(box) {
     },
   ];
   box.appendChild(table(cols, state.logs));
+}
+
+// exportAudit 导出审计记录（CSV / JSON）。
+//
+// 不走 api.js 的 http 封装：下载是浏览器原生行为，会话 Cookie 自动携带；
+// CSV 由后端输出 UTF-8 BOM，Excel 打开中文不乱码。
+function exportAudit(format) {
+  window.open(`/api/audit-logs/export?format=${encodeURIComponent(format)}`, '_blank');
 }
 
 // ---------------------------------------------------------------------------

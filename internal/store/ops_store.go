@@ -190,6 +190,41 @@ func (d *DB) CountAuditLogs() (int, error) {
 	return n, err
 }
 
+// ListAuditLogsExport 导出用：按时间倒序列出全部匹配记录，**不设 1000 行上限**。
+//
+// 为什么不复用 ListAuditLogs：它把 limit 钳在 1000（防前端传 0 拉全表），
+// 导出会在超过 1000 行时静默丢记录——对"导出做等保存档"这个用途是致命的。
+// 这里不设上限是安全的：审计表本身被 TrimAuditLogs 钳在 5000 条，
+// 最坏也就是 5000 行 × 每行几百字节，内存完全可控。
+func (d *DB) ListAuditLogsExport(action string) ([]*model.AuditLog, error) {
+	q := `SELECT id,username,action,target,detail,method,path,status,ip,ua,via_token,created_at FROM audit_logs`
+	args := []any{}
+	if action != "" {
+		q += ` WHERE action LIKE ?`
+		args = append(args, action+"%")
+	}
+	q += ` ORDER BY created_at DESC`
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*model.AuditLog
+	for rows.Next() {
+		var l model.AuditLog
+		var viaToken int
+		if err := rows.Scan(&l.ID, &l.Username, &l.Action, &l.Target, &l.Detail,
+			&l.Method, &l.Path, &l.Status, &l.IP, &l.UA, &viaToken, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		l.ViaToken = viaToken == 1
+		out = append(out, &l)
+	}
+	return out, rows.Err()
+}
+
 // TrimAuditLogs 只保留最近 keep 条审计记录。
 //
 // 审计表会无限增长，长期跑着的面板必须有个上限。

@@ -754,9 +754,14 @@ curl -H "X-API-Token: <token>" http://<面板地址>:8888/api/sites
 
 **过滤**：`GET /api/audit-logs?limit=200&action=site.delete`。
 
+**导出**：`GET /api/audit-logs/export?format=csv|json&action=<前缀>`（`format` 留空为 CSV）。
+CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipanel-audit-<时间>.<格式>`；
+导出不受列表接口 1000 行的钳制（最多导出表内全部 5000 条）。**导出本身会留痕**
+（记为 `audit.export`，含操作者、格式与行数）——"谁把审计日志拿走了"与"谁动了配置"同等重要。
+
 **保留**：表内最多 5000 条，每写入 200 条触发一次裁剪。
 
-> 审计**只记写操作**——"谁看了站点配置"不留痕。审计写入失败只记服务端日志，绝不影响主流程。
+> 审计**只记写操作与登录事件**（外加审计导出留痕）——"谁看了站点配置"不留痕。审计写入失败只记服务端日志，绝不影响主流程。
 
 ### 10.3 配置历史
 
@@ -884,6 +889,7 @@ curl -H "X-API-Token: <token>" http://<面板地址>:8888/api/sites
 | POST | `/api/tokens` | 创建 Token（`scopes` 支持 `read`/`write`/`shell`） |
 | DELETE | `/api/tokens/{id}` | 吊销 Token |
 | GET | `/api/audit-logs?limit=&action=` | 审计日志 |
+| GET | `/api/audit-logs/export?format=csv\|json&action=` | 导出审计（本身留痕 `audit.export`） |
 | GET | `/api/alert-types` | 告警规则类型清单 |
 | GET | `/api/alerts?limit=` | 告警列表 |
 | POST | `/api/alerts/{id}/resolve` | 标记告警已处理 |

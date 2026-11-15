@@ -64,9 +64,11 @@ curl -X POST https://<panel-host>:8888/api/tokens \
 ## 4. 只读端点（read scope 即可）
 
 `GET /api/sites`、`GET /api/system/status`、`GET /api/system/metrics`、
-`GET /api/system/config-history`、`GET /api/audit-logs`、`GET /api/alerts`、
-`GET /api/backups`、`GET /api/cron/jobs`、`GET /api/auth/me`（恒 200，用
-`authenticated` 字段区分登录态——**4xx 才是错误**）。
+`GET /api/system/config-history`、`GET /api/audit-logs`、
+`GET /api/audit-logs/export?format=csv|json`（下载文件；**导出本身会留痕**
+`audit.export`——把审计日志带走的动作与改配置同等敏感，agent 不要在无人
+确认时批量导出）、`GET /api/alerts`、`GET /api/backups`、`GET /api/cron/jobs`、
+`GET /api/auth/me`（恒 200，用 `authenticated` 字段区分登录态——**4xx 才是错误**）。
 
 ## 5. 必须知道的运行时约定（踩过坑的）
 

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/csv"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -262,6 +264,110 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		"total": total,
 		"limit": auditLimit,
 	})
+}
+
+// handleAuditLogsExport GET /api/audit-logs/export —— 导出审计记录（CSV / JSON）。
+//
+// 这是**读端点**（GET + read scope 即可）：不写任何业务状态，只是把审计表
+// 换成 CSV / JSON 文件流。但导出审计留痕本身是敏感动作——"谁把审计日志
+// 拿走了"与"谁动了配置"同等重要，所以成功导出后**显式**写一条 audit.export
+// 记录（auditMiddleware 只记写方法，GET 不会经过它；本端点仿 handleAuditLogin
+// 手工写）。
+//
+// CSV 用 UTF-8 **带 BOM** 输出：审计内容大量中文，无 BOM 时 Excel 打开直接乱码，
+// 而审计导出的主要消费场景就是交给合规检查的人用表格软件打开。
+func (s *Server) handleAuditLogsExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, model.ErrBadRequest)
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "csv"
+	}
+	if format != "csv" && format != "json" {
+		writeError(w, http.StatusBadRequest, model.ErrBadRequest)
+		return
+	}
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+
+	logs, err := s.svc.DB().ListAuditLogsExport(action)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+
+	stamp := time.Now().Format("20060102-150405")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename=zhiweipanel-audit-%s.%s", stamp, format))
+
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		writeJSON(w, http.StatusOK, map[string]any{"logs": logs, "total": len(logs)})
+		s.recordAuditExport(r, format, len(logs))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// UTF-8 BOM（EF BB BF）：Excel 识别中文必需
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+
+	cw := csv.NewWriter(w)
+	// 表头与备份恢复预览无关，列顺序固定：机器可读的 id 在首列，时间为本地时区。
+	_ = cw.Write([]string{
+		"id", "time", "username", "action", "target", "detail",
+		"method", "path", "status", "ip", "via", "user_agent",
+	})
+	for _, l := range logs {
+		via := "session"
+		if l.ViaToken {
+			via = "token"
+		}
+		_ = cw.Write([]string{
+			l.ID,
+			l.CreatedAt.Format("2006-01-02 15:04:05"),
+			l.Username,
+			l.Action,
+			l.Target,
+			l.Detail,
+			l.Method,
+			l.Path,
+			strconv.Itoa(l.Status),
+			l.IP,
+			via,
+			l.UA,
+		})
+	}
+	cw.Flush()
+	s.recordAuditExport(r, format, len(logs))
+}
+
+// recordAuditExport 留痕"谁导出了审计日志"。
+//
+// 失败只记服务端日志，绝不影响导出主流程（与审计写入的总体原则一致：
+// 辅助设施不能把用户的正常操作搞失败）。
+func (s *Server) recordAuditExport(r *http.Request, format string, rows int) {
+	ua := r.UserAgent()
+	if len(ua) > 200 {
+		ua = ua[:200]
+	}
+	p, _ := principalFrom(r.Context())
+	entry := &model.AuditLog{
+		Username: p.Username,
+		Action:   "audit.export",
+		Target:   format,
+		Detail:   fmt.Sprintf("rows=%d", rows),
+		Method:   r.Method,
+		Path:     r.URL.Path,
+		Status:   http.StatusOK,
+		IP:       s.clientIP(r),
+		UA:       ua,
+		ViaToken: p.ViaToken,
+	}
+	if err := s.svc.DB().SaveAuditLog(entry); err != nil {
+		log.Printf("[audit] 写导出留痕失败: %v", err)
+	}
 }
 
 // handleAuditLogin 记录登录事件。

@@ -37,10 +37,15 @@ package version
 // v0.1.5 = 文档与交付加固：README 已知限制勘误（#14/#15 描述的 UI
 // 断点经实机核实早已实现，属文档漂移，移除后 16 条 → 14 条）、
 // 新增面向 AI agent 的 docs/AGENT.md、CI Docker job 增加 nginx 存活断言。
+// v0.3.0 = 新增用户可见功能：审计日志导出（CSV / JSON，导出本身留痕
+// audit.export；CSV 带 UTF-8 BOM 兼容 Excel），运维中心「操作审计」页
+// 增加导出按钮。**版本号从 0.1.5 直接跳 0.3.0**：minor 应到 0.2.0，但
+// 0.2.0 ~ 0.2.2 已被版本线重置前的旧线占用（见下方 History），
+// 复用会造成 CHANGELOG 出现两个语义不同的 v0.2.0，故跳号并在此说明。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.1.5"
+const Version = "0.3.0"
 
 // History 已经发布过的历史版本号。
 //
@@ -64,6 +69,7 @@ var History = []string{
 	"0.2.2",
 	"0.1.3",
 	"0.1.4",
+	"0.1.5",
 }
 
 // All 返回当前版本与全部历史版本号。
