@@ -266,6 +266,12 @@ func main() {
 		return !diff.IsClean()
 	})
 
+	// 注入配置漂移检测：对比 conf.d 当前内容与最近一次成功下发的快照，
+	// 有面板以外的改动（certbot / 手工编辑）时触发 config_drift 告警。
+	alert.SetConfigDriftChecker(func() (bool, string) {
+		return svc.CheckConfigDrift()
+	})
+
 	// 首次启动下发一次配置
 	if err := svc.ApplyAllConfig(context.Background()); err != nil {
 		log.Printf("初始配置下发失败（可稍后在控制台手动重试）: %v", err)

@@ -583,6 +583,11 @@ var AlertRuleTypes = []AlertRuleType{
 		Label:       "nginx 配置异常",
 		Description: "nginx 配置检测失败时告警",
 	},
+	{
+		Value:       "config_drift",
+		Label:       "配置漂移",
+		Description: "nginx 配置被面板以外的途径修改（与最近一次成功下发的快照不一致）时告警",
+	},
 }
 
 // IsValidAlertRuleType 报告 t 是否是受支持的告警规则类型。

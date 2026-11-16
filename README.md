@@ -1,6 +1,6 @@
 # 智维面板 ZhiweiPanel
 
-**轻量级自托管建站面板 · v0.3.0**
+**轻量级自托管建站面板 · v0.4.0**
 
 智维面板（ZhiweiPanel）把"建站面板"这件事收敛到**网站管理本身**：域名、网站目录、SSL、PHP、限流、防盗链、防篡改、日志、告警、计划任务、备份。刻意不做宝塔那套周边（应用商店、FTP、容器编排、面板市场），把功能面收窄到能一次交付、长期维护得住的规模。
 
@@ -485,5 +485,5 @@ type Driver interface {
 10. **同一端口只能给一个站点**。nginx 监听冲突由面板拦截，报错提示换端口。
 11. **`-http-port` 只在 `-tls` 开启时生效**。纯 HTTP 模式下不会起 301 重定向 listener。
 12. **数据库密码只能重置、不能查看**。创建时一次性明文回显，之后任何读路径都拿不到明文。
-13. **告警类型是固定枚举**（`status_5xx` / `traffic_quota` / `cert_expiry` / `site_down` / `tamper` / `nginx_config`），前端下拉由后端 `GET /api/alert-types` 动态下发，新增类型必须同时改后端检查器。
+13. **告警类型是固定枚举**（`status_5xx` / `traffic_quota` / `cert_expiry` / `site_down` / `tamper` / `nginx_config` / `config_drift`），前端下拉由后端 `GET /api/alert-types` 动态下发，新增类型必须同时改后端检查器。
 14. **`-backup-dir` 目前只创建目录，不改变备份落盘位置**。备份子系统固定写到 `<data>/backup/site/<id>.tar.gz` 与 `<data>/backup/database/<id>.sql.gz`；`-backup-dir` 指定的目录（默认 `<data>/backups`）会被创建但不被使用。

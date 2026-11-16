@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/zhiwei/panel/internal/confhistory"
@@ -163,6 +164,42 @@ func (s *Service) DiffConfigSnapshot(id string) ([]confhistory.FileDiff, error) 
 	}
 
 	return diffs, nil
+}
+
+// CheckConfigDrift 把 conf.d 当前内容与最近一次成功下发的快照对比。
+// 返回 (是否漂移, 漂移摘要)；摘要列出不一致的文件名（超过 5 个截断计数）。
+//
+// 漂移的判定：最新快照里有、现在没有 / 现在有、快照里没有 / 同名但内容不同。
+// 快照在每次 ApplyAllConfig 成功后刷新，所以面板自己的变更不会误报——
+// 只有 certbot、手工编辑等面板以外的改动才会触发。
+//
+// 从未成功下发过（无任何快照）时不算漂移：没有基线就谈不上"偏离基线"。
+func (s *Service) CheckConfigDrift() (bool, string) {
+	entries, err := confhistory.List(s.configHistoryRoot())
+	if err != nil || len(entries) == 0 {
+		return false, ""
+	}
+	diffs, err := s.DiffConfigSnapshot(entries[0].ID)
+	if err != nil {
+		return false, ""
+	}
+	var changed []string
+	for _, d := range diffs {
+		if d.Identical {
+			continue
+		}
+		changed = append(changed, d.Name)
+	}
+	if len(changed) == 0 {
+		return false, ""
+	}
+	sort.Strings(changed)
+	const maxList = 5
+	if len(changed) > maxList {
+		return true, fmt.Sprintf("%s 等 %d 个文件",
+			strings.Join(changed[:maxList], ", "), len(changed))
+	}
+	return true, strings.Join(changed, ", ")
 }
 
 // RestoreConfigSnapshot 把配置回滚到指定快照并重载 nginx。

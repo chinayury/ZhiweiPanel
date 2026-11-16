@@ -82,7 +82,7 @@ curl -X POST https://<panel-host>:8888/api/tokens \
    基线前没保存的修改不会生效。
 5. **同一监听端口只能给一个站点**，冲突会被面板拦截（400，不是 nginx 报错）。
 6. **告警类型是固定枚举**：`status_5xx` / `traffic_quota` / `cert_expiry` / `site_down` /
-   `tamper` / `nginx_config`，以 `GET /api/alert-types` 的运行时返回为准，不要自己编。
+   `tamper` / `nginx_config` / `config_drift`，以 `GET /api/alert-types` 的运行时返回为准，不要自己编。
 7. **登录有限流**：IP+用户名 5 次/分钟、锁定 15 分钟，纯账号维度阈值更高。
    自动化脚本不要用密码登录循环试错，用 Token。
 8. **容器部署形态**：面板与 nginx 同容器（`-runtime=host`），nginx 由镜像入口脚本拉起。

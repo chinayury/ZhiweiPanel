@@ -58,8 +58,50 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 		}
 	}
 
+	// 配置漂移（conf.d 与最近一次成功下发的快照不一致）
+	c.checkConfigDrift(sites)
+
 	for _, s := range sites {
 		c.checkSite(ctx, s)
+	}
+}
+
+// checkConfigDrift 配置漂移检查。
+//
+// 漂移是**全局**状态（conf.d 目录 vs 最近一次成功下发的快照），
+// 但告警规则挂在站点上：沿用 nginx_config 的形态，对每个启用了
+// config_drift 规则的站点各告一条。Engine 有 30 分钟的站点级抑制窗口，
+// 漂移持续存在也不会每个周期都刷屏。
+func (c *Checker) checkConfigDrift(sites []*model.Site) {
+	if configDriftChecker == nil {
+		return
+	}
+	drift, summary := configDriftChecker()
+	if !drift {
+		return
+	}
+	for _, s := range sites {
+		for _, rule := range s.Alert.Rules {
+			if rule.Type == "config_drift" && rule.Enabled {
+				c.eng.Raise(s, rule, fmt.Sprintf(
+					"检测到 nginx 配置被面板以外的途径修改（与最近一次成功下发的快照不一致）: %s。"+
+						"若改动合法，请在面板内重新保存配置以刷新基线；否则请排查改动来源", summary))
+				break
+			}
+		}
+	}
+}
+
+// configDriftChecker 由 service 层注入：返回 (是否漂移, 漂移摘要)。
+//
+// 摘要列出与快照不一致的配置文件名（超长截断），供告警消息直接使用。
+var configDriftChecker func() (bool, string)
+
+// SetConfigDriftChecker 注入配置漂移检测实现。
+// 未注入时静默跳过，不影响其它告警（与 tamperChecker 同款约定）。
+func SetConfigDriftChecker(f func() (bool, string)) {
+	if f != nil {
+		configDriftChecker = f
 	}
 }
 
