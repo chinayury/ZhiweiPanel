@@ -21,6 +21,11 @@ const DEFAULTS = {
   rewrite: { enabled: false, rules: '', file: '' },
   index: { files: ['index.php', 'index.html', 'index.htm'] },
   raw_conf: '',
+  // v0.4.0: 站点级「自定义 Nginx 配置」。extra_conf 是片段，extra_conf_pos
+  // 决定注入位置（inside=server 块内 / outside=server 块外）。raw_conf 保留作
+  // 老库兼容：载入时若 extra_conf 为空则把 raw_conf 搬过来（见 mergeDefaults）。
+  extra_conf: '',
+  extra_conf_pos: 'inside',
   ssl: { enabled: false, cert_file: '', key_file: '', force_https: false, hsts: false, hsts_max_age: 31536000, protocols: ['TLSv1.2', 'TLSv1.3'], ocsp: false, use_http2: true },
   php: { enabled: true, version: '8.2', socket: '', max_execution_time: 30, memory_limit: '256M', disable_functions: [], custom_php_config: '' },
   redirect: { rules: [] },
@@ -30,7 +35,7 @@ const DEFAULTS = {
   security: { block_sqli: false, block_xss: false, block_traversal: false, block_ua: false, block_ua_keywords: [], deny_paths: [], deny_extensions: [], server_tokens_off: true, prevent_iframe: false },
   logs: { access_log: true, error_log: true, custom_format: '', retention_days: 30, disable_log: false },
   alert: { enabled: true, rules: [], channels: [] },
-  extra: { gzip: true, gzip_type: '', gzip_min_length: 1024, client_max_body_size: '50m', keepalive_timeout: 0, send_timeout: 0, read_timeout: 0, dns_resolver: '', browser_cache: 0, static_cache_ext: ['jpg', 'png', 'css', 'js'], custom_404: '' },
+  extra: { gzip: true, gzip_type: '', gzip_min_length: 1024, client_max_body_size: '', keepalive_timeout: 0, send_timeout: 0, read_timeout: 0, dns_resolver: '', browser_cache: 0, static_cache_ext: ['jpg', 'png', 'css', 'js'], custom_404: '' },
   edate: null,
   // v0.2.1: 对外监听端口。空数组 = 默认 [80]。全局 -public-port 模式时由后端覆盖。
   listen_ports: [80],
@@ -91,6 +96,15 @@ const CHANNEL_TYPES = [
   { value: 'wecom', label: '企业微信机器人', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx' },
 ];
 
+// 站点类型 → 默认 client_max_body_size。
+// 反代站点更偏向快速响应（上传走代理，8m 够用），PHP 站点要容纳表单/附件上传，
+// 静态站点居中。用户仍可在「其他设置」里覆盖。
+function defaultBodySize(site) {
+  if (site.proxy && site.proxy.enabled) return '8m';
+  if (site.php && site.php.enabled) return '32m';
+  return '16m';
+}
+
 // 深合并默认值，保证嵌套结构完整
 function mergeDefaults(site) {
   const out = { ...site };
@@ -132,6 +146,22 @@ function mergeDefaults(site) {
   out.cert = site.cert && typeof site.cert === 'object'
     ? { ...DEFAULTS.cert, ...site.cert }
     : null;
+
+  // 自定义 Nginx 配置迁移：早期 raw_conf 只支持 server 块内固定末尾，
+  // 迁移到新的 extra_conf（默认 inside）以便位置可配。搬运后清空 raw_conf，
+  // 避免两字段重复渲染（后端在 extra_conf 非空时不再回退 raw_conf）。
+  if ((!out.extra_conf || !String(out.extra_conf).trim()) && out.raw_conf && String(out.raw_conf).trim()) {
+    out.extra_conf = out.raw_conf;
+    out.raw_conf = '';
+  }
+  if (out.extra_conf_pos !== 'outside' && out.extra_conf_pos !== 'inside') {
+    out.extra_conf_pos = 'inside';
+  }
+  // client_max_body_size 为空时按站点类型给默认值（P1）。
+  if (!out.extra.client_max_body_size) {
+    out.extra.client_max_body_size = defaultBodySize(out);
+  }
+
   return out;
 }
 
@@ -374,14 +404,33 @@ export async function render(container, params) {
     ]);
   }
 
-  // 7. 配置文件
+  // 7. 配置文件（自定义 Nginx 配置，默认折叠）
   function tabRaw() {
+    const form = h('div', {}, [
+      field('注入位置',
+        selectInput(site.extra_conf_pos || 'inside', [
+          { value: 'inside', label: 'server 块内（可覆盖面板自带的 IP 白名单/限速）' },
+          { value: 'outside', label: 'server 块外（文件末尾，给 upstream / limit_req_zone 等 http 指令）' },
+        ], (v) => { site.extra_conf_pos = v; markDirty(); }),
+        'inside 插在 ssl_session_timeout 之后、/.well-known 之前；outside 插在 server 块之后'),
+      field('自定义 nginx 配置片段',
+        textArea(site.extra_conf, (v) => { site.extra_conf = v; markDirty(); },
+          { rows: 16, mono: true, placeholder: '例如：\nlocation ^~ /x { return 403; }\n\n# outside 位置可放 http 上下文指令：\nlimit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;' }),
+        '内容原样注入；保存前会先做 nginx -t 校验，失败自动回滚并回显原始报错，不会落库', true),
+    ]);
+
     return h('div', {}, [
       h('div', { class: 'warn-box' }, [
         icon('warning'),
-        h('span', {}, '此处内容会原样注入该站点的 server 块，请确认语法正确，错误配置会导致 nginx 无法启动。'),
+        h('span', {}, '此处内容原样注入该站点的 nginx 配置，语法错误会导致 nginx 无法启动。保存时先校验，失败即回滚并显示 nginx 原始报错。'),
       ]),
-      field('自定义 nginx 配置片段', textArea(site.raw_conf, (v) => { site.raw_conf = v; markDirty(); }, { rows: 16, mono: true, placeholder: '# 在此填写自定义指令，例如：\n# client_max_body_size 100m;\n# gzip on;' }), null, true),
+      h('details', { class: 'collapse' }, [
+        h('summary', { class: 'collapse-head' }, [
+          sectionTitle('自定义 Nginx 配置'),
+          h('span', { class: 'field-hint' }, '点击展开 / 折叠'),
+        ]),
+        form,
+      ]),
       h('div', { class: 'inline-actions' }, [
         button('查看生成的 Nginx 配置', viewConfig, 'default', 'eye'),
         h('span', { class: 'field-hint' }, '预览的是后端已保存的配置，保存后生效'),
@@ -761,7 +810,7 @@ export async function render(container, params) {
       sectionTitle('响应头与信息隐藏'),
       grid(2,
         h('div', {}, checkboxField('隐藏 nginx 版本号（server_tokens off）', sc.server_tokens_off, (v) => { sc.server_tokens_off = v; markDirty(); })),
-        h('div', {}, checkboxField('禁止被 iframe 嵌套（X-Frame-Options）', sc.prevent_iframe, (v) => { sc.prevent_iframe = v; markDirty(); })),
+        h('div', { class: 'field-hint' }, 'X-Frame-Options / X-Content-Type-Options / Referrer-Policy 三个安全头已默认开启（见生成的 Nginx 配置）'),
       ),
     ]);
   }
@@ -858,7 +907,23 @@ export async function render(container, params) {
       store.markDirty(false);
       toast('站点配置已保存', 'success');
     } catch (e) {
-      toast(e.message || '保存失败', 'error');
+      // 后端 writeError 返回 {error, code}；nginx 配置校验失败时 error 字段
+      // 是 nginx -t 原文（多行）。用弹窗完整展示，而不是被 toast 截断。
+      const raw = e && e.data && e.data.error;
+      if (raw) {
+        const m = modal({
+          title: 'nginx 配置校验未通过',
+          width: '760px',
+          content: h('div', {}, [
+            h('div', { class: 'warn-box' },
+              '本次修改未落库，磁盘上的配置文件已恢复为保存前内容。以下是 nginx 原始报错：'),
+            codeBox(raw, { maxHeight: '320px' }),
+          ]),
+          footer: [button('关闭', () => m.close(), 'primary')],
+        });
+      } else {
+        toast(e.message || '保存失败', 'error');
+      }
     } finally {
       saveBtn.disabled = false;
       clear(saveBtn);

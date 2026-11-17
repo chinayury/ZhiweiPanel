@@ -105,6 +105,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("/api/admin/smtp", s.handleGetOrSetSMTP)
 	reg("/api/dns-providers", s.handleDNSProviders)
 	reg("/api/alert-types", s.handleAlertTypes)
+	reg("/api/apps", s.handleApps)
 
 	mux.Handle("/api/", protected)
 	return mux
@@ -429,6 +430,20 @@ func (s *Server) handleAlertTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"types": model.AlertRuleTypes})
+}
+
+// handleApps 返回软件商店目录与安装状态（已安装 / 可安装）。
+func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, model.ErrBadRequest)
+		return
+	}
+	list, err := s.svc.ListApps(r.Context())
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": list})
 }
 
 // handlerCtx 提取请求上下文。

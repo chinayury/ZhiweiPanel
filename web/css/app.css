@@ -1188,3 +1188,25 @@ select.input { cursor: pointer; appearance: none; padding-right: 28px;
 }
 .fm-upload-progress.fm-progress-error { color: var(--danger, #d33); }
 .fm-upload-progress.fm-progress-done { color: var(--success, #2a8); }
+
+/* 站点详情「自定义 Nginx 配置」折叠区 */
+details.collapse { border: 1px solid var(--border-soft, #e5e7eb); border-radius: 8px; padding: 8px 12px; margin-top: 12px; }
+details.collapse summary.collapse-head {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+details.collapse summary.collapse-head::-webkit-details-marker { display: none; }
+details.collapse summary.collapse-head .section-title { margin: 0; flex: 1; }
+details.collapse[open] summary.collapse-head { margin-bottom: 10px; }
+
+/* 软件商店卡片 */
+.app-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.app-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+.app-name .icon { color: var(--primary); }
+.app-desc { color: var(--text-sub); font-size: 13px; margin: 4px 0 8px; line-height: 1.5; }
+.app-install { margin-top: 8px; }
+.app-code { display: block; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 6px; padding: 6px 10px; margin-bottom: 4px; word-break: break-all; }

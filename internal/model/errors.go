@@ -18,4 +18,8 @@ var (
 	// 与 ErrUnavailable 区别：明确指向 MySQL 缺失，前端可以给出"装 MySQL"
 	// 引导；后者更泛，含义不清。
 	ErrMySQLNotAvailable = errors.New("MySQL 子系统未配置，请先在安装脚本启用（INSTALL_MYSQL=1）")
+	// ErrNginxConfig 站点生成的 nginx 配置校验失败（静态校验或 nginx -t）。
+	// 错误信息携带 nginx 原文（不包装成通用文案），API 层据此回显给前端，
+	// 让用户在站点编辑页直接看到是哪一个自定义片段/哪一行写错了。
+	ErrNginxConfig = errors.New("nginx 配置校验失败")
 )

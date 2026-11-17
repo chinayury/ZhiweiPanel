@@ -97,7 +97,21 @@ export async function render(container) {
       },
       {
         label: '主域名',
-        render: (s) => h('span', { class: 'mono-text' }, (s.domains || [])[0] || '-'),
+        render: (s) => {
+          const d = (s.domains || [])[0] || '';
+          const url = siteURL(s);
+          // 通配符域名（*.foo.com）没有可直接访问的地址，退回纯文本
+          if (!url) return h('span', { class: 'mono-text' }, d || '-');
+          return h('a', {
+            class: 'mono-text',
+            href: url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            title: `新标签页打开 ${url}`,
+            // 告警列同款防御：将来若整行可点，避免误触导航
+            onclick: (e) => e.stopPropagation(),
+          }, d);
+        },
       },
       {
         label: '状态',
@@ -256,6 +270,18 @@ export async function render(container) {
     if (!Array.isArray(ports) || !ports.length) return null;
     if (ports.length === 1 && ports[0] === 80) return null; // 默认不显
     return tag(`端口:${ports.join(',')}`, 'info');
+  }
+
+  // 主域名 → 可访问地址，供列表页点击跳转（新标签页打开）。
+  // SSL 启用走 https；监听端口含默认端口（https=443 / http=80）时不带端口号，
+  // 否则拼第一个端口。取不到可访问地址时返回空串，单元格退回纯文本。
+  function siteURL(s) {
+    const d = (s.domains || [])[0] || '';
+    if (!d || d.startsWith('*.')) return '';
+    const ports = Array.isArray(s.listen_ports) && s.listen_ports.length ? s.listen_ports : [80];
+    const ssl = !!(s.ssl && s.ssl.enabled);
+    const port = ports.includes(ssl ? 443 : 80) ? '' : `:${ports[0]}`;
+    return `${ssl ? 'https' : 'http'}://${d}${port}`;
   }
 
   // v0.2.0: 批量操作条。多选站点后显示"批量启动/停止"按钮。

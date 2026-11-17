@@ -242,6 +242,8 @@ export const api = {
   dnsProviders: () => http.get('/dns-providers'),
   // alertTypes 返回受支持的站点告警规则类型（后端权威清单）。
   alertTypes: () => http.get('/alert-types'),
+  // 软件商店：目录 + 已安装/可安装状态。
+  apps: () => http.get('/apps'),
 
   // 告警
   alerts: {

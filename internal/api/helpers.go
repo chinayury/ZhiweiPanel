@@ -63,6 +63,13 @@ func writeModelError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
+	// nginx 配置校验失败：把 nginx -t 原文原样回显给前端。
+	// 这是 P0「自定义 Nginx 配置」的用户反馈通道——用户在站点编辑页
+	// 写错了片段，必须能看到是哪一行、哪个指令，而不是一句通用「保存失败」。
+	if errors.Is(err, model.ErrNginxConfig) {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if errors.Is(err, model.ErrBadRequest) || errors.Is(err, model.ErrInvalidDomain) ||
 		errors.Is(err, model.ErrInvalidPath) || errors.Is(err, model.ErrInvalidValue) {
 		writeError(w, http.StatusBadRequest, err)

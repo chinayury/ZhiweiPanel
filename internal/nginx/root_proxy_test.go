@@ -53,28 +53,22 @@ func TestRenderRootProxyReplacesMainLocation(t *testing.T) {
 	if strings.Contains(conf, "try_files $uri $uri/ /index.php?$query_string") {
 		t.Errorf("主 location 不应再输出 try_files（应让位给 proxy_pass），但实际有:\n%s", conf)
 	}
-	// 3) force_https 的 301 跳转必须保留——从接管的 location ^~ / 内部
-	//    发出（v0.1.3 修复）。旧实现在这里断言"整站反代不应再叠加 301"，
-	//    把缺陷当成了预期行为：跳转丢失后面板上 force_https 开关仍显示
-	//    "已开启"，http:// 访问却直接服务不跳转。
+	// 3) force_https 的 301 跳转必须保留——P2 拆块后由 80 块的 location / 承担
+	//    （v0.1.3 曾把它补写进接管的 location ^~ / 内，现改为独立 80 块）。
 	if !strings.Contains(conf, "return 301 https://$host$request_uri") {
 		t.Errorf("整站反代 + force_https 时必须保留 301 跳转:\n%s", conf)
 	}
-	// 跳转必须在 location ^~ / 内（server 级会把 ACME 挑战一起跳掉）。
-	proxyIdx := strings.Index(conf, "    location ^~ / {")
-	redirectIdx := strings.Index(conf, "if ($scheme = http)")
-	if proxyIdx < 0 || redirectIdx < proxyIdx {
-		t.Errorf("301 跳转应写在 location ^~ / 内部:\n%s", conf)
+	// 拆块后绝不再用 if($scheme=http) 跳转。
+	if strings.Contains(conf, "if ($scheme = http)") {
+		t.Errorf("不应再用 if($scheme=http) 跳转:\n%s", conf)
 	}
-	// 4) 关键：不能出现 duplicate location（"location / {" 与 "location ^~ / {" 同 server 块）
-	// 简单检查："location / {" 出现 0 次，且 "location ^~ / {" 出现 1 次
-	main := strings.Count(conf, "    location / {")
-	proxyRoot := strings.Count(conf, "    location ^~ / {")
-	if main > 0 {
-		t.Errorf("整站反代下不应再输出主 location /，但出现 %d 次", main)
+	// 4) 关键：不能出现 duplicate location。拆块后 80 块有 location / {（301），
+	// 443 块有 location ^~ / {（proxy_pass），各出现一次、互不冲突。
+	if main := strings.Count(conf, "    location / {"); main != 1 {
+		t.Errorf("80 块应有且只有一个 location / {（301），实际 %d 次:\n%s", main, conf)
 	}
-	if proxyRoot < 1 {
-		t.Errorf("整站反代下应输出 location ^~ / { ... proxy_pass ... }，但出现 0 次")
+	if proxyRoot := strings.Count(conf, "    location ^~ / {"); proxyRoot != 1 {
+		t.Errorf("443 块应有且只有一个 location ^~ / {（proxy_pass），实际 %d 次:\n%s", proxyRoot, conf)
 	}
 	// 5) WebSocket 透传也要有
 	if !strings.Contains(conf, "proxy_set_header Upgrade $http_upgrade") {
@@ -87,10 +81,10 @@ func TestRenderRootProxyReplacesMainLocation(t *testing.T) {
 // force_https 的 HTTP→HTTPS 跳转曾随之静默丢失——面板上开关显示"已开启"，
 // http:// 访问却直接服务不跳转。
 //
-// 修复（v0.1.3）：跳转指令补写进接管的 location ^~ / 内。不能放 server 级：
-// server 级的 if(...) return 先于 location 匹配执行，会把 ACME 挑战目录
-// 一起 301 掉，证书续签随之失败。本测试锁死三个方向：
-//  1. 整站反代 + force_https 开 → 跳转在 location ^~ / 内、proxy_pass 之前；
+// P2 的解法：SSL 就绪 + 强制 HTTPS 时拆 80 / 443 两个 server 块，
+// 80 块承担 301 跳转（location / { return 301 }），443 块专注反代。
+// 本测试锁死三个方向：
+//  1. 整站反代 + force_https 开 → 跳转在 80 块、反代在 443 块；
 //  2. 整站反代 + force_https 关 → 跳转不在；
 //  3. 子路径反代（/api）→ 主 location / 及其跳转照旧，不受影响。
 func TestRenderRootProxyForceHTTPSRedirect(t *testing.T) {
@@ -121,20 +115,18 @@ func TestRenderRootProxyForceHTTPSRedirect(t *testing.T) {
 
 	t.Run("整站反代+force_https开", func(t *testing.T) {
 		conf := render(newSite(true, "/"))
-		locIdx := strings.Index(conf, "    location ^~ / {")
-		redIdx := strings.Index(conf, "if ($scheme = http)")
-		passIdx := strings.Index(conf, "proxy_pass http://127.0.0.1:8787")
-		if locIdx < 0 {
-			t.Fatalf("缺少 location ^~ /:\n%s", conf)
-		}
-		if redIdx < locIdx {
-			t.Errorf("301 跳转应写在 location ^~ / 内部:\n%s", conf)
-		}
-		if redIdx > passIdx {
-			t.Errorf("301 跳转应在 proxy_pass 之前（先跳转再反代）:\n%s", conf)
-		}
-		if !strings.Contains(conf, "return 301 https://$host$request_uri") {
+		if !strings.Contains(conf, "return 301 https://$host$request_uri;") {
 			t.Errorf("缺少 301 跳转指令:\n%s", conf)
+		}
+		// P2 拆块：跳转在 80 块、反代在 443 块，不再用 if($scheme=http)。
+		if strings.Contains(conf, "if ($scheme = http)") {
+			t.Errorf("不应再用 if($scheme=http) 跳转:\n%s", conf)
+		}
+		if !strings.Contains(conf, "    location ^~ / {") {
+			t.Errorf("缺少整站反代 location ^~ /:\n%s", conf)
+		}
+		if !strings.Contains(conf, "proxy_pass http://127.0.0.1:8787") {
+			t.Errorf("缺少 proxy_pass:\n%s", conf)
 		}
 	})
 

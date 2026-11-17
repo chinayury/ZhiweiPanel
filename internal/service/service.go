@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/zhiwei/panel/internal/acme"
 	"github.com/zhiwei/panel/internal/alert"
+	"github.com/zhiwei/panel/internal/apps"
 	"github.com/zhiwei/panel/internal/driver"
 	"github.com/zhiwei/panel/internal/logmgr"
 	"github.com/zhiwei/panel/internal/mailer"
@@ -470,6 +472,57 @@ func (s *Service) ensureSiteDirs(site *model.Site) {
 	s.EnsureDefaultIndex(site)
 }
 
+// prevalidateSite 在落库前校验站点的新配置能被 nginx 接受。
+//
+// 这是 P0「自定义 Nginx 配置」注入点的核心保障：自定义片段是用户手写的
+// 自由 nginx 文本，任何语法错误（缺右括号、http 级指令误入 server 块、
+// 引用了不存在的证书……）都会让 nginx -t 失败。若沿用早期的「先 SaveSite
+// 再 ApplyAllConfig」，校验失败时 DB 已经写进坏配置、磁盘却回滚成旧配置——
+// 两者从此不一致，之后任何一次全量下发都会再次卡死在这个坏配置上。
+//
+// 流程（顺序不能错）：
+//
+//	写正式文件（WriteFileAtomic：临时文件 → rename 原子替换）→ nginx -t
+//	  → 失败：恢复旧文件，返回 nginx -t 原文；不落库、不 reload
+//	  → 通过：什么都不落（后续 SaveSite + ApplyAllConfig 做全量下发）
+//
+// 这里只测试「这一站点」的新配置在真实 conf.d 里的正确性；http 级配置、
+// default server、孤儿清理等全量同步仍由 ApplyAllConfig 收口。
+func (s *Service) prevalidateSite(ctx context.Context, site *model.Site) error {
+	// 访问认证口令文件必须先就位：nginx 解析配置时就会打开它，
+	// 文件缺失会让 nginx -t 直接报 open() failed。
+	if err := s.syncAccessFile(site); err != nil {
+		return err
+	}
+	res, err := nginx.Render(site, s.renderOptions(site))
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(s.drv.Paths().SiteConfDir, SiteConfFile(site.ID))
+	old, readErr := os.ReadFile(path)
+	existed := readErr == nil
+
+	if err := s.drv.WriteSiteConf(ctx, site.ID, res.SiteConf); err != nil {
+		return fmt.Errorf("写入站点 %s 配置失败: %w", safeOneLine(site.Name), err)
+	}
+	ok, msg, err := s.drv.NginxTest(ctx)
+	if err != nil || !ok {
+		// 恢复旧文件：新写进来的坏配置必须撤回，保证 md5 与保存前一致。
+		if existed {
+			_ = s.drv.WriteSiteConf(ctx, site.ID, string(old))
+		} else {
+			_ = s.drv.RemoveSiteConf(ctx, site.ID)
+		}
+		raw := strings.TrimSpace(msg)
+		if raw == "" {
+			raw = "nginx 配置检测失败"
+		}
+		return fmt.Errorf("%w: %s", model.ErrNginxConfig, raw)
+	}
+	return nil
+}
+
 // CreateSite 新建站点。
 func (s *Service) CreateSite(ctx context.Context, site *model.Site) (*model.Site, error) {
 	if len(site.Domains) == 0 {
@@ -536,6 +589,12 @@ func (s *Service) CreateSite(ctx context.Context, site *model.Site) (*model.Site
 		site.Status = model.SiteStatusRunning
 	}
 	s.ensureSiteDirs(site)
+
+	// P0：落库前先校验新配置能被 nginx 接受。失败即返回——DB 不落库、
+	// 不建 MySQL，磁盘上的旧 conf 已恢复，nginx 原文随错误回显给前端。
+	if err := s.prevalidateSite(ctx, site); err != nil {
+		return nil, err
+	}
 
 	// MySQL 联动：site.Mysql != nil 表示用户在前端勾了"创建数据库"。
 	// 1) MySQL 子系统未装 → 直接拒绝（明确错误，不要"假装成功"）
@@ -706,6 +765,12 @@ func (s *Service) UpdateSite(ctx context.Context, id string, site *model.Site) (
 		return nil, err
 	}
 	s.ensureSiteDirs(site)
+
+	// P0：落库前先校验新配置能被 nginx 接受。失败即返回——DB 不落库、
+	// 磁盘上的旧 conf 已恢复，nginx 原文随错误回显给前端。
+	if err := s.prevalidateSite(ctx, site); err != nil {
+		return nil, err
+	}
 
 	if err := s.db.SaveSite(site); err != nil {
 		return nil, err
@@ -1035,4 +1100,96 @@ func safeOneLine(v string) string {
 	v = strings.ReplaceAll(v, "\r", " ")
 	v = strings.ReplaceAll(v, "\n", " ")
 	return strings.TrimSpace(v)
+}
+
+// ---------------------------------------------------------------------------
+// 软件商店（目录 + 已安装检测）
+// ---------------------------------------------------------------------------
+
+// ListApps 返回软件商店目录与每条软件的安装状态。
+//
+// 只做检测，不执行安装/卸载：安装动作以 InstallHint 命令提示的形式交给运维。
+// 探测复用现有子系统（NginxStatus / PHPVersions / mysql.Status），
+// 其余走 exec 固定命令白名单（无任何用户输入拼接），超时 3 秒。
+func (s *Service) ListApps(ctx context.Context) ([]model.App, error) {
+	out := make([]model.App, 0, len(apps.Catalog))
+	for _, e := range apps.Catalog {
+		app := model.App{
+			ID:          e.ID,
+			Name:        e.Name,
+			Category:    e.Category,
+			Description: e.Description,
+			InstallHint: e.InstallHint,
+		}
+		switch e.ID {
+		case "nginx":
+			if st, err := s.drv.NginxStatus(ctx); err == nil && st.Installed {
+				app.Status = model.AppInstalled
+				app.Version = st.Version
+			}
+		case "php":
+			if vers, err := s.drv.PHPVersions(ctx); err == nil && len(vers) > 0 {
+				app.Status = model.AppInstalled
+				app.Version = joinVersions(vers)
+			}
+		case "mysql":
+			if s.mysql != nil {
+				if st, err := s.mysql.Status(ctx); err == nil && st.Installed {
+					app.Status = model.AppInstalled
+					app.Version = st.Version
+					if app.Version == "" {
+						app.Version = st.Server
+					}
+				}
+			}
+		case "redis":
+			if v, ok := probeVersion(ctx, "redis-server", "--version"); ok {
+				app.Status, app.Version = model.AppInstalled, v
+			}
+		case "docker":
+			if v, ok := probeVersion(ctx, "docker", "--version"); ok {
+				app.Status, app.Version = model.AppInstalled, v
+			}
+		case "nodejs":
+			if v, ok := probeVersion(ctx, "node", "--version"); ok {
+				app.Status, app.Version = model.AppInstalled, v
+			}
+		case "memcached":
+			if v, ok := probeVersion(ctx, "memcached", "--version"); ok {
+				app.Status, app.Version = model.AppInstalled, v
+			}
+		}
+		if app.Status == "" {
+			app.Status = model.AppAvailable
+		}
+		out = append(out, app)
+	}
+	return out, nil
+}
+
+// joinVersions 把 PHP 版本列表拼成逗号分隔串。
+func joinVersions(vers []driver.PHPVersion) string {
+	parts := make([]string, 0, len(vers))
+	for _, v := range vers {
+		if v.Version != "" {
+			parts = append(parts, v.Version)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// probeVersion 用固定命令探测软件版本（白名单，无用户输入）。
+// 失败/超时返回 ("", false)。只取第一行，避免多行输出污染展示。
+func probeVersion(ctx context.Context, bin string, args ...string) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	v := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(v, '\n'); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v, v != ""
 }

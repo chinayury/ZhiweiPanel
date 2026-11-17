@@ -95,11 +95,20 @@ func TestNoDuplicateLocationPrefixes(t *testing.T) {
 // duplicateLocationPrefixes 找出配置里重复出现的 location 前缀。
 // 只比较 location 的匹配串（去掉 ^~ / ~* / ~ 等修饰符后的部分），
 // 因为 nginx 的 duplicate 判定基于最终匹配串。
+//
+// nginx 的 duplicate location 只在**同一 server 块内**判定；P2 把 80/443
+// 拆成两个 server 块后，同一份配置里会有多个 server 块，因此每遇到新的
+// server { 就重置查重表，否则会把「80 块的 location /」与「443 块的
+// location /」误报成重复。
 func duplicateLocationPrefixes(conf string) []string {
-	seen := map[string]bool{}
 	var dups []string
+	seen := map[string]bool{}
 	for _, line := range strings.Split(conf, "\n") {
 		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "server {") {
+			seen = map[string]bool{}
+			continue
+		}
 		if !strings.HasPrefix(t, "location ") {
 			continue
 		}

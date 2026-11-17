@@ -45,6 +45,9 @@ export async function render(container) {
   }
 
   let step = 0;
+  // 最近一次自动填写的根目录路径。用于区分"自动值"与"手动值"：
+  // 自动值在主域名变化时跟随更新，手动值永不回填。
+  let autoPath = '';
 
   container.appendChild(h('div', { class: 'page-header' }, [
     h('div', {}, [
@@ -83,6 +86,17 @@ export async function render(container) {
     if (!canNext()) {
       toast(step === 0 ? '请至少填写一个域名' : '请填写网站根目录', 'error');
       return;
+    }
+    // 域名 → 根目录自动填写：离开第 1 步时按主域名填入 /www/wwwroot/<主域名>。
+    // 与后端建站兜底（service.go：Root.Path 为空时同样取主域名）保持一致，
+    // 通配符 *.foo.com 落盘成 _foo.com。仅当路径为空或仍是上次自动填的值时
+    // 覆盖——用户手动改过的路径不回填（回到上一步改域名也不会冲掉手改值）。
+    if (step === 0) {
+      const auto = autoRootPath();
+      if (auto && (!draft.root.path.trim() || draft.root.path === autoPath)) {
+        draft.root.path = auto;
+        autoPath = auto;
+      }
     }
     step = Math.min(STEPS.length - 1, step + 1);
     draw();
@@ -197,9 +211,18 @@ export async function render(container) {
 
   function suggestPath(root) {
     const d = (draft.domains[0] || '').trim();
+    if (root.trim() && root === autoPath) return `已按主域名自动填写，可手动修改：${root.trim()}`;
     if (!root.trim() && d) return `建议路径：/www/wwwroot/${d}`;
     if (!root.trim()) return '例如：/www/wwwroot/example.com';
     return `将挂载到：${root.trim()}`;
+  }
+
+  // 主域名 → 默认根目录路径（/www/wwwroot/<主域名>）。
+  // 规则与后端建站兜底一致：通配符 *.foo.com → _foo.com（service.go CreateSite）。
+  function autoRootPath() {
+    const d = (draft.domains[0] || '').trim();
+    if (!d) return '';
+    return `/www/wwwroot/${d.replace(/^\*\./, '_')}`;
   }
 
   function switchFieldRow(label, checked, onChange) {
@@ -347,7 +370,9 @@ export async function render(container) {
       listen_ports: draft.listen_ports && draft.listen_ports.length ? draft.listen_ports : [80],
       php: draft.php,
       index: draft.index,
-      raw_conf: draft.raw_conf,
+      // v0.4.0: 自定义 Nginx 配置统一走 extra_conf（创建时留空，详情页再编辑）
+      extra_conf: '',
+      extra_conf_pos: 'inside',
       sub_dir: { enabled: false, rules: [] },
       access: { enabled: false, allow: [], deny: [], auth_enabled: false, auth_user: '', auth_pass: '', allow_methods: [] },
       traffic: { bandwidth_limit: '', monthly_quota_mb: 0, enforce_quota: false, rate_limit_per_ip: 0 },
@@ -359,7 +384,7 @@ export async function render(container) {
       security: { block_sqli: false, block_xss: false, block_traversal: false, block_ua: false, block_ua_keywords: [], deny_paths: [], deny_extensions: [], server_tokens_off: true, prevent_iframe: false },
       logs: { access_log: true, error_log: true, custom_format: '', retention_days: 30, disable_log: false },
       alert: { enabled: true, rules: [], channels: [] },
-      extra: { gzip: true, gzip_type: '', gzip_min_length: 1024, client_max_body_size: '50m', keepalive_timeout: 0, send_timeout: 0, read_timeout: 0, dns_resolver: '', browser_cache: 0, static_cache_ext: ['jpg', 'png', 'css', 'js'] },
+      extra: { gzip: true, gzip_type: '', gzip_min_length: 1024, client_max_body_size: (draft.php.enabled ? '32m' : '16m'), keepalive_timeout: 0, send_timeout: 0, read_timeout: 0, dns_resolver: '', browser_cache: 0, static_cache_ext: ['jpg', 'png', 'css', 'js'] },
       ssl: { ...draft.ssl, enabled: draft.ssl.enabled },
     };
 

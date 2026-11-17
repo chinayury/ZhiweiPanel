@@ -85,10 +85,6 @@ type renderer struct {
 	opt     RenderOptions
 	buf     strings.Builder
 	httpBuf strings.Builder
-	// forceRedirect 由 buildSSLRedirect 置位，buildLocation 在 location / 里消费。
-	// 不能放在 server 级：server 级的 if(...) return 在 location 匹配之前执行，
-	// 会把 ACME 的 HTTP-01 挑战也 301 掉，导致证书续期失败。
-	forceRedirect bool
 	// locations 已占用的 location 匹配串，用于去重防 duplicate location。
 	locations map[string]bool
 	// rootReplacedByProxy 主 location "/" 是否被某条 proxy 规则接管。
@@ -127,7 +123,13 @@ func (r *renderer) buildHTTP() {
 	// 删掉这段 map 不影响功能，只是少一份误导人的配置。
 }
 
-// buildServer 生成 server 块。
+// buildServer 生成该站点的 server 配置。
+//
+// 两种形态（P2）：
+//   - SSL 就绪且开启强制 HTTPS：80 与 443 拆成两个 server 块。
+//     80 块只做两件事——放行 /.well-known/acme-challenge/（不 301，否则
+//     证书续期失败）+ 其余 301 到 https；443 块专注反代/静态/PHP。
+//   - 其余情况（纯 HTTP、SSL 但未强制跳转）：保持单 server 块。
 func (r *renderer) buildServer() {
 	s := r.site
 	r.w("# ============================================")
@@ -136,14 +138,53 @@ func (r *renderer) buildServer() {
 	r.w("# ============================================")
 	r.w("")
 
-	// ---------- HTTP 监听 ----------
-	// 只有同时具备 ssl 监听与证书时才输出 ssl，否则 nginx 会因缺证书拒绝启动。
 	sslReady := r.sslReady()
+	if sslReady && s.SSL.ForceHTTPS {
+		r.buildHTTPRedirectServer()
+		r.buildSiteServerBlock([]int{443}, sslReady)
+	} else {
+		r.buildSiteServerBlock(r.effectiveListenPorts(sslReady), sslReady)
+	}
+
+	// outside 位置的自定义配置：放在所有 server 块之后（http 上下文，
+	// 供 upstream / limit_req_zone / map 这类只能在 http 里出现的指令）。
+	r.buildExtraConfOutside()
+}
+
+// buildHTTPRedirectServer 生成强制 HTTPS 时的 80 端口 server 块。
+//
+// 为什么拆出来而不是用 server 级的 if($scheme=http) return：
+// server 级的 if 在 location 匹配之前执行，会把 /.well-known/acme-challenge/
+// 一起 301 掉，导致 Let's Encrypt HTTP-01 续签失败。
+// 拆成独立 80 块后，ACME location 是精确前缀，先于 location / 的 301 命中。
+func (r *renderer) buildHTTPRedirectServer() {
+	s := r.site
+	for _, p := range r.httpPorts() {
+		r.w("server {")
+		r.w("    listen %d;", p)
+		if !r.opt.DisableIPv6 {
+			r.w("    listen [::]:%d;", p)
+		}
+		r.w("    server_name %s;", s.Domains.All())
+		r.w("")
+		r.buildACMEChallenge()
+		r.w("")
+		r.w("    # 其余请求 301 到 HTTPS")
+		r.w("    location / {")
+		r.w("        return 301 https://$host$request_uri;")
+		r.w("    }")
+		r.w("}")
+		r.w("")
+	}
+}
+
+// buildSiteServerBlock 生成一个完整的站点 server 块。
+func (r *renderer) buildSiteServerBlock(ports []int, sslReady bool) {
+	s := r.site
 	r.w("server {")
 	// 决定对外端口：全局 -public-port 覆盖；否则用 site.ListenPorts；
 	// SSL 站点时 443 强制加入（443 是 TLS 公认端口，ACME HTTP-01 续签不依赖 443
 	// 但浏览器 https 入口需要）。
-	ports := r.effectiveListenPorts(sslReady)
 	for _, p := range ports {
 		if sslReady && p == 443 {
 			r.w("    listen %d ssl;", p)
@@ -168,14 +209,12 @@ func (r *renderer) buildServer() {
 	}
 	r.w("")
 	// 顺序有讲究：
-	//   1. buildSSLRedirect 只是置位 forceRedirect 标志，必须最先跑，
-	//      否则 buildLocation 读不到标志、HTTPS 跳转就丢了；
-	//   2. buildLocation 接着占掉主 location "/"，
+	//   1. buildLocation 先占掉主 location "/"，
 	//      之后 buildProxy / buildRedirects / buildSubDirBindings 里若也有人填 "/"，
 	//      才会在 claimLocation 处被跳过而不是生成 duplicate location。
-	r.buildSSLRedirect()
-	// 必须在 buildLocation 之前扫描 proxy 规则：识别"整站反代"
-	// 场景，让 buildLocation 跳过主 location / 让位给 proxy_pass。
+	//   2. buildExtraConfInside 必须在 buildAccess（IP 白名单 allow/deny）与
+	//      buildRateLimit（限速）之后、buildACMEChallenge 之前输出——
+	//      让用户能在自定义配置里覆盖面板自带的 IP 白名单/限速。
 	r.buildProxyScan()
 	r.buildLocation()
 	r.buildServerTokens()
@@ -191,12 +230,12 @@ func (r *renderer) buildServer() {
 	r.buildBasicAuth()
 	r.buildProxy()
 	r.buildTLS()
+	r.buildExtraConfInside()
 	r.buildACMEChallenge()
 	r.buildCustom404()
 	r.buildRewrites()
 	r.buildSubDirBindings()
 	r.buildRedirects()
-	r.buildRawConf()
 	r.w("}")
 	r.w("")
 }
@@ -333,12 +372,18 @@ func logFormatName(custom string) string {
 
 // securityHeaders 输出安全响应头，供 server 级与需要自定义 add_header 的
 // location 共用（nginx 下本级有 add_header 就不继承上级，故需显式重复）。
+//
+// 前三个是 P3 默认安全头，**无条件**输出：X-Frame-Options 防点击劫持、
+// X-Content-Type-Options 防 MIME 嗅探、Referrer-Policy 收敛跨域泄露。
+// 注意 add_header 的继承陷阱：子级 location 里只要出现一个 add_header，
+// 父级（server 级）的全部 add_header 就失效。因此静态缓存 location 里
+// 必须把这里整段重复一遍，否则同时开启缓存与安全项时安全头会静默丢失。
 // HSTS 只在 TLS 就绪时输出：明文响应带上 HSTS 头会被浏览器拒绝生效。
 func (r *renderer) securityHeaders(indent string) {
 	sec := r.site.Security
-	if sec.PreventIframe {
-		r.w("%sadd_header X-Frame-Options \"SAMEORIGIN\" always;", indent)
-	}
+	r.w("%sadd_header X-Frame-Options \"SAMEORIGIN\" always;", indent)
+	r.w("%sadd_header X-Content-Type-Options \"nosniff\" always;", indent)
+	r.w("%sadd_header Referrer-Policy \"strict-origin-when-cross-origin\" always;", indent)
 	if sec.ServerTokensOff {
 		r.w("%sadd_header X-Powered-By \"\" always;", indent)
 	}
@@ -624,7 +669,7 @@ func (r *renderer) buildProxy() {
 		}
 		timeout := rule.Timeout
 		if timeout == 0 {
-			timeout = 60
+			timeout = 30
 		}
 		// 保留用户填写的原始路径：填 /api 走完整路径匹配，填 /api/ 才剥离前缀。
 		// 这里不能强制补尾斜杠，否则用户填的 /ws 会被悄悄变成 /ws/。
@@ -641,21 +686,6 @@ func (r *renderer) buildProxy() {
 			continue
 		}
 		r.w("    location ^~ %s {", prefix)
-		// 整站反代（path="/"）时 buildLocation 整体跳过，force_https 的
-		// HTTP→HTTPS 跳转必须在这里补写：否则反代站点的 http:// 直接服务、
-		// 不跳转，而面板上 force_https 开关仍显示"已开启"——典型的
-		// "看起来配好了、实际没生效"静默故障。
-		//
-		// 为什么必须写在 location 内而不能放 server 级：server 级的
-		// if(...) return 先于 location 匹配执行，会把 ACME 挑战目录一起
-		// 301 掉，证书续签随之失败（见 buildSSLRedirect 注释）。
-		// 写在 ^~ / 内是安全的：ACME 的 location ^~ /.well-known/acme-
-		// challenge/ 是更长前缀，优先命中，不受影响。
-		if prefix == "/" && r.forceRedirect {
-			r.w("        if ($scheme = http) {")
-			r.w("            return 301 https://$host$request_uri;")
-			r.w("        }")
-		}
 		if rule.WebSocket {
 			r.w("        proxy_http_version 1.1;")
 			r.w("        proxy_set_header Upgrade $http_upgrade;")
@@ -722,29 +752,19 @@ func (r *renderer) buildTLS() {
 	// 用户没明确要求时不该替他决定。
 }
 
-// buildSSLRedirect 标记是否需要把 HTTP 跳转到 HTTPS。
-// 真正的跳转指令由 buildLocation 写进 location / 内——server 级的
-// if(...) return 会在 location 匹配之前执行，连 ACME 挑战一起跳掉。
-func (r *renderer) buildSSLRedirect() {
-	s := r.site
-	if !r.sslReady() {
-		return
-	}
-	if s.SSL.ForceHTTPS {
-		r.forceRedirect = true
-	}
-}
-
 // buildACMEChallenge 放行 Let's Encrypt 的 HTTP-01 挑战目录。
 // 必须用 ^~ 前缀匹配，且不能被 force_https 跳转拦截，否则证书续期会失败。
+//
+// 不再因 root 为空而整段跳过：强制 HTTPS 的 80 块依赖这段 location 让
+// /.well-known/acme-challenge/ 命中 404 而不是被 location / 的 301 劫走。
+// root 为空时省略 root 指令（try_files 落到 nginx 默认根，probe 依旧 404）。
 func (r *renderer) buildACMEChallenge() {
 	root := ensureTrailingSlash(r.site.Root.Path)
-	if root == "/" || root == "" {
-		return
-	}
 	r.w("    # ACME HTTP-01 挑战目录：直连 80，不跳 HTTPS（否则续签失败）")
 	r.w("    location ^~ /.well-known/acme-challenge/ {")
-	r.w("        root %s;", root)
+	if root != "" && root != "/" {
+		r.w("        root %s;", root)
+	}
 	r.w("        default_type text/plain;")
 	// 必须显式关掉访问认证：server 级开了 auth_basic 之后，
 	// 这个 location 会继承认证要求，Let's Encrypt 的验证请求拿不到
@@ -821,6 +841,21 @@ func (r *renderer) effectiveListenPorts(sslReady bool) []int {
 			continue
 		}
 		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// httpPorts 返回"强制 HTTPS 拆分"时 80 块要监听的 HTTP 端口：
+// 即 effectiveListenPorts 去掉 443（443 归 TLS 块）。纯 HTTP 站点不会走到这里，
+// 因为拆分只在 sslReady && ForceHTTPS 时发生。
+func (r *renderer) httpPorts() []int {
+	sslReady := r.sslReady()
+	var out []int
+	for _, p := range r.effectiveListenPorts(sslReady) {
+		if sslReady && p == 443 {
+			continue
+		}
 		out = append(out, p)
 	}
 	return out
@@ -925,15 +960,6 @@ func (r *renderer) buildLocation() {
 	// 反代/重定向/子目录若也填 "/"，会在各自的 claimLocation 处被跳过。
 	r.claimLocation("/")
 	r.w("    location / {")
-
-	// HTTP 跳 HTTPS 必须写在 location 内，不能写在 server 级：
-	// server 级的 if(...) return 先于 location 匹配执行，会把
-	// /.well-known/acme-challenge/ 一起 301 掉，证书就续不了了。
-	if r.forceRedirect {
-		r.w("        if ($scheme = http) {")
-		r.w("            return 301 https://$host$request_uri;")
-		r.w("        }")
-	}
 
 	if s.Extra.BrowserCache > 0 {
 		// nginx 的 expires 指令不带单位后缀，写成 86400s 会直接语法报错。
@@ -1097,16 +1123,52 @@ func (r *renderer) buildRewrites() {
 	}
 }
 
-// buildRawConf 输出用户自定义配置。
-func (r *renderer) buildRawConf() {
-	if strings.TrimSpace(r.site.RawConf) == "" {
+// extraConf 返回生效的自定义配置片段与位置。
+// ExtraConf 为空时回退到早期字段 RawConf（按 inside 处理），保证老站点升级后
+// 自定义配置不丢失，也避免两字段同时渲染出重复内容。位置只认 inside / outside，
+// 其余一律按 inside 兜底。
+func (r *renderer) extraConf() (content, pos string) {
+	content = strings.TrimSpace(r.site.ExtraConf)
+	pos = r.site.ExtraConfPos
+	if pos != "outside" {
+		pos = "inside"
+	}
+	if content == "" {
+		if raw := strings.TrimSpace(r.site.RawConf); raw != "" {
+			return raw, "inside"
+		}
+	}
+	return content, pos
+}
+
+// buildExtraConfInside 把自定义配置注入 server 块内。
+// 此时 IP 白名单（allow/deny）与限速已在前面生成，用户可在自定义里覆盖它们。
+func (r *renderer) buildExtraConfInside() {
+	content, pos := r.extraConf()
+	if content == "" || pos != "inside" {
 		return
 	}
 	r.w("")
-	r.w("    # ---- 自定义配置 ----")
-	for _, line := range strings.Split(r.site.RawConf, "\n") {
+	r.w("    # ==== 自定义配置开始 ====")
+	for _, line := range strings.Split(content, "\n") {
 		r.w("    %s", line)
 	}
+	r.w("    # ==== 自定义配置结束 ====")
+}
+
+// buildExtraConfOutside 把自定义配置注入 server 块之后（文件末尾，http 上下文，
+// 供 upstream / limit_req_zone / map 等只能在 http 里出现的指令用）。
+func (r *renderer) buildExtraConfOutside() {
+	content, pos := r.extraConf()
+	if content == "" || pos != "outside" {
+		return
+	}
+	r.w("# ==== 自定义配置开始 ====")
+	for _, line := range strings.Split(content, "\n") {
+		r.w("%s", line)
+	}
+	r.w("# ==== 自定义配置结束 ====")
+	r.w("")
 }
 
 // staticExts 规范化静态文件扩展名列表并做正则转义。

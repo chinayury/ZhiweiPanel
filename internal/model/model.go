@@ -45,24 +45,31 @@ type Site struct {
 	//   - 推荐做法：80/443 上挂主站点，非标端口的"次要服务"用反代指向 127.0.0.1:<port>
 	ListenPorts []int `json:"listen_ports"`
 
-	Domains  DomainList   `json:"domains"`
-	SubDir   SubDirConf   `json:"sub_dir"`
-	Root     RootConf     `json:"root"`
-	Access   AccessConf   `json:"access"`
-	Traffic  TrafficConf  `json:"traffic"`
-	Rewrite  RewriteConf  `json:"rewrite"`
-	Index    IndexConf    `json:"index"`
-	RawConf  string       `json:"raw_conf"`
-	SSL      SSLConf      `json:"ssl"`
-	PHP      PHPConf      `json:"php"`
-	Redirect RedirectConf `json:"redirect"`
-	Proxy    ProxyConf    `json:"proxy"`
-	Hotlink  HotlinkConf  `json:"hotlink"`
-	Lock     LockConf     `json:"lock"`
-	Security SecurityConf `json:"security"`
-	Logs     LogsConf     `json:"logs"`
-	Alert    AlertConf    `json:"alert"`
-	Extra    ExtraConf    `json:"extra"`
+	Domains DomainList  `json:"domains"`
+	SubDir  SubDirConf  `json:"sub_dir"`
+	Root    RootConf    `json:"root"`
+	Access  AccessConf  `json:"access"`
+	Traffic TrafficConf `json:"traffic"`
+	Rewrite RewriteConf `json:"rewrite"`
+	Index   IndexConf   `json:"index"`
+	RawConf string      `json:"raw_conf"`
+	// ExtraConf 站点级「自定义 Nginx 配置」片段：用户手写的 nginx 指令，原样注入。
+	// ExtraConfPos 控制注入位置：inside=server 块内 / outside=server 块后（文件末尾，
+	// 供 upstream / limit_req_zone 等 http 上下文指令用）。留空按 inside 处理。
+	// 与 RawConf 的关系：RawConf 是早期「仅 server 块内、固定末尾」的自定义配置，
+	// 保留作读回退（旧库兼容）；渲染时 ExtraConf 为空则回退到 RawConf（inside）。
+	ExtraConf    string       `json:"extra_conf"`
+	ExtraConfPos string       `json:"extra_conf_pos"`
+	SSL          SSLConf      `json:"ssl"`
+	PHP          PHPConf      `json:"php"`
+	Redirect     RedirectConf `json:"redirect"`
+	Proxy        ProxyConf    `json:"proxy"`
+	Hotlink      HotlinkConf  `json:"hotlink"`
+	Lock         LockConf     `json:"lock"`
+	Security     SecurityConf `json:"security"`
+	Logs         LogsConf     `json:"logs"`
+	Alert        AlertConf    `json:"alert"`
+	Extra        ExtraConf    `json:"extra"`
 
 	// Mysql 站点级 MySQL/MariaDB 数据库绑定。
 	// nil 表示该站点不绑定数据库；非 nil 时面板在 CreateSite/DeleteSite

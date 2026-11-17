@@ -43,9 +43,9 @@ func TestSSLRendersBothListeners(t *testing.T) {
 }
 
 // TestForceHTTPSDoesNotBlockACME 锁死一个会静默掐断证书续期的缺陷：
-// 早期把跳转写在 server 级，server 级 if(...) return 先于 location 匹配执行，
-// 于是 /.well-known/acme-challenge/ 也被 301 到 https，LE 验证失败、
-// 89 天后证书到期站点下线。跳转必须落在 location / 内，且 ACME 目录要用 ^~ 放行。
+// 强制 HTTPS 的跳转绝不能把 /.well-known/acme-challenge/ 一起 301 掉。
+// P2 的解法是 80 与 443 拆两个 server 块：80 块里 ACME location 精确前缀
+// 先于 location / 的 301 命中，续期不受影响；443 块专注站点本身。
 func TestForceHTTPSDoesNotBlockACME(t *testing.T) {
 	res, err := Render(sslSite(), RenderOptions{})
 	if err != nil {
@@ -58,36 +58,28 @@ func TestForceHTTPSDoesNotBlockACME(t *testing.T) {
 		t.Fatalf("缺少 ACME 挑战 location，续签会失败:\n%s", conf)
 	}
 
-	// 2. 跳转必须位于 location / 内部，不能裸露在 server 级
-	locStart := strings.Index(conf, "location / {")
-	if locStart < 0 {
-		t.Fatalf("缺少 location /")
+	// 2. 跳转由 80 块的 location / { return 301 ... } 承担，不再用 if($scheme=http)
+	if strings.Contains(conf, "if ($scheme = http)") {
+		t.Errorf("不应再用 if($scheme=http) 跳转（应拆 80/443 两个 server 块）:\n%s", conf)
 	}
-	locEnd := strings.Index(conf[locStart:], "\n    }")
-	if locEnd < 0 {
-		t.Fatalf("location / 未闭合")
-	}
-	locBody := conf[locStart : locStart+locEnd]
-	if !strings.Contains(locBody, "if ($scheme = http)") {
-		t.Errorf("跳转不在 location / 内，会连 ACME 挑战一起 301:\n%s", locBody)
+	if !strings.Contains(conf, "return 301 https://$host$request_uri;") {
+		t.Errorf("缺少 301 跳转指令:\n%s", conf)
 	}
 
-	// 3. server 级（location 之外）不允许出现跳转
-	serverLevel := conf[:locStart]
-	if strings.Contains(serverLevel, "return 301 https://") {
-		t.Errorf("server 级存在跳转，会在 location 匹配前拦截 ACME:\n%s", serverLevel)
+	// 3. 80 块里 ACME location 必须先于 location / 的 301 命中
+	acmeIdx := strings.Index(conf, "location ^~ /.well-known/acme-challenge/ {")
+	redirLocIdx := strings.Index(conf, "location / {")
+	if acmeIdx < 0 || redirLocIdx < 0 || acmeIdx > redirLocIdx {
+		t.Errorf("ACME location 应位于 80 块的 location / 之前（否则续期被 301 拦截）:\n%s", conf)
 	}
 
 	// 4. ACME location 自身不能含跳转
-	acmeStart := strings.Index(conf, "location ^~ /.well-known/acme-challenge/ {")
-	if acmeStart >= 0 {
-		acmeEnd := strings.Index(conf[acmeStart:], "\n    }")
-		if acmeEnd > 0 {
-			acmeBody := conf[acmeStart : acmeStart+acmeEnd]
-			if strings.Contains(acmeBody, "return 301") {
-				t.Errorf("ACME location 内含跳转:\n%s", acmeBody)
-			}
-		}
+	acmeBody := conf[acmeIdx:]
+	if i := strings.Index(acmeBody, "\n    }"); i > 0 {
+		acmeBody = acmeBody[:i]
+	}
+	if strings.Contains(acmeBody, "return 301") {
+		t.Errorf("ACME location 内含跳转:\n%s", acmeBody)
 	}
 }
 
@@ -131,14 +123,11 @@ func TestServerLevelRootPresent(t *testing.T) {
 		t.Fatalf("缺少 PHP location:\n%s", conf)
 	}
 
-	// 2. server 级（第一个 location 之前）必须有 root
-	firstLoc := strings.Index(conf, "location ")
-	if firstLoc < 0 {
-		t.Fatalf("没有任何 location")
-	}
-	serverLevel := conf[:firstLoc]
-	if !strings.Contains(serverLevel, "root /www/wwwroot/a.test/;") {
-		t.Errorf("server 级缺少 root，PHP location 的 $document_root 会取错:\n%s", serverLevel)
+	// 2. root 必须在 443 块的 server 级（4 空格缩进），不能只在 location / 里。
+	// P2 拆块后 80 块是纯跳转块、没有 root；真正的 root 在 443 块 server 级，
+	// 因此这里直接断言 server 级的 root 指令存在（location / 内的是 8 空格缩进）。
+	if !strings.Contains(conf, "    root /www/wwwroot/a.test/;") {
+		t.Errorf("443 块 server 级缺少 root，PHP location 的 $document_root 会取错:\n%s", conf)
 	}
 }
 

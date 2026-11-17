@@ -91,6 +91,7 @@ const ROUTES = [
   { pattern: /^\/alerts$/, key: 'alerts', title: '告警', icon: 'alerts', load: () => import('./views/alerts.js') },
   { pattern: /^\/ops$/, key: 'ops', title: '运维中心', icon: 'settings', load: () => import('./views/ops.js') },
   { pattern: /^\/ops\/([a-z]+)$/, key: 'ops', title: '运维中心', icon: 'settings', load: () => import('./views/ops.js') },
+  { pattern: /^\/apps$/, key: 'apps', title: '软件商店', icon: 'store', load: () => import('./views/apps.js') },
   { pattern: /^\/settings$/, key: 'settings', title: '设置', icon: 'settings', load: () => import('./views/settings.js') },
 ];
 
@@ -104,6 +105,7 @@ const NAV = [
   { hash: '#/logs', label: '日志', icon: 'logs', match: /^\/logs$/ },
   { hash: '#/alerts', label: '告警', icon: 'alerts', match: /^\/alerts$/ },
   { hash: '#/ops', label: '运维中心', icon: 'settings', match: /^\/ops(\/|$)/ },
+  { hash: '#/apps', label: '软件商店', icon: 'store', match: /^\/apps$/ },
   { hash: '#/settings', label: '设置', icon: 'settings', match: /^\/settings$/ },
 ];
 

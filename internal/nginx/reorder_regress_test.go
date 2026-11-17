@@ -52,9 +52,12 @@ func TestProxyStillRendersAfterReorder(t *testing.T) {
 	if !strings.Contains(conf, "location / {") {
 		t.Errorf("主 location 丢失:\n%s", conf)
 	}
-	// HTTPS 跳转必须在 location / 内
-	if !strings.Contains(conf, "if ($scheme = http)") {
+	// HTTPS 跳转必须在（P2 拆块后由 80 块承担，不再用 if($scheme=http)）
+	if !strings.Contains(conf, "return 301 https://$host$request_uri;") {
 		t.Errorf("HTTPS 跳转丢失:\n%s", conf)
+	}
+	if strings.Contains(conf, "if ($scheme = http)") {
+		t.Errorf("不应再用 if($scheme=http) 跳转:\n%s", conf)
 	}
 	// 其它 location 也要在
 	for _, must := range []string{

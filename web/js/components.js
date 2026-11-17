@@ -91,6 +91,7 @@ const ICONS = {
   key: 'M14 2a8 8 0 00-7.7 10.2L2 16.5V22h5.5l1.3-1.3v-2.2h2.2l1.6-1.6A8 8 0 1014 2zm3 6.5a1.8 1.8 0 110-3.6 1.8 1.8 0 010 3.6z',
   disk: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 3a7 7 0 110 14 7 7 0 010-14zm0 3a4 4 0 100 8 4 4 0 000-8z',
   clock: 'M12 2a10 10 0 100 20 10 10 0 000-20zm1 10V6h-2v7h6v-2h-4z',
+  store: 'M5 3h14l1 1v3H4V4l1-1zM4 9h16l-1 12H5L4 9zm4 4h2v6H8v-6zm4 0h2v6h-2v-6z',
 };
 
 export function icon(name, size = 16) {
