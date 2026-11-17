@@ -36,6 +36,39 @@
 
 ---
 
+## v0.5.0 — 新增：软件商店、站点级自定义 Nginx 配置（预校验）、安全头与渲染重构（2026-11-21）
+
+**定位**：新增用户可见功能（minor）。**本批功能已先行部署到生产实机并通过 8 条验收**
+（2026-11-17 生产 0.1.3 → 0.4.0+ 升级即包含本批改动），本轮为正式打版；**升级到 0.5.0
+即可与生产版本对齐**。
+
+### 新增
+
+| 项 | 说明 |
+|----|------|
+| **软件商店**（`GET /api/apps` + 顶级页面） | 面板已知软件的**只读目录**（nginx / PHP-FPM / MySQL / Redis / Docker / Node.js / Memcached，按 web/runtime/database/cache/dev 分类）：检测安装状态与版本，给出安装命令提示（InstallHint）。**不自动安装/卸载任何东西**；探测复用现有子系统（NginxStatus / PHPVersions / mysql.Status），其余走固定命令白名单（无用户输入拼接，3 秒超时） |
+| **站点级「自定义 Nginx 配置」extra_conf** | 新字段 `extra_conf` + `extra_conf_pos`：`inside`（server 块内，可覆盖面板自带 IP 白名单/限速）与 `outside`（server 块后 http 上下文，供 `upstream` / `limit_req_zone` / `map`）。早期 `raw_conf` 自动迁移（extra_conf 为空时搬入并清空 raw_conf） |
+| **落库前 nginx -t 预校验**（P0） | 建站/改站先写盘跑 `nginx -t`：失败则**不落库**、磁盘配置原子恢复为保存前内容、nginx 原始报错随 400 完整回显（前端弹窗展示）。修复「DB 落了坏配置、磁盘回滚成旧配置，之后每次全量下发都卡死」的事故形态 |
+| **80/443 拆块渲染重构** | TLS 站点拆成独立 80 块（ACME 挑战 200 直达、非 301）+ TLS 块；渲染器拆分为 `buildSiteServerBlock` / `buildHTTPRedirectServer` / `effectiveListenPorts` |
+| **三个默认安全头** | `X-Frame-Options SAMEORIGIN` / `X-Content-Type-Options nosniff` / `Referrer-Policy strict-origin-when-cross-origin` 无条件输出（已处理 nginx add_header 子 location 继承陷阱） |
+| **建站向导根目录自动填写** | 主域名 → `/www/wwwroot/<主域名>`（通配符 `*.foo.com` → `_foo.com`，与后端兜底一致）；手动改过不回填 |
+| **client_max_body_size 按站点类型默认值**（P1） | 反代 8m / PHP 32m / 静态 16m（用户仍可覆盖） |
+| **反代超时 60s → 30s** | 整站反代场景的失败反馈更快 |
+
+### 质量
+
+- `internal/nginx/extra_conf_test.go`（新）：extra_conf inside/outside 注入断言。
+- 既有渲染/反代/SSL 用例随 80/443 拆块重构同步更新。
+- 全量 `go test ./...` 18 包通过（v0.4.0 时 212+ 用例基础上继续增长）。
+- 文档同步：README（定位表述、功能清单、目录结构）、USAGE.md（4.8 重写、导航表 9→10 项、API 速查）、AGENT.md（/api/apps、预校验约定）。
+
+### 兼容性说明
+
+- 无破坏性变更：老库 `raw_conf` 自动迁移；未配置 extra_conf 的站点渲染结果不变。
+- 生产（systemd 宿主部署）自 2026-11-17 起运行本功能集，本轮打版后二进制与生产品牌一致。
+
+---
+
 ## v0.4.0 — 新增：配置漂移主动告警（config_drift）（2026-11-17）
 
 **定位**：新增用户可见功能（告警类型 +1），无破坏性变更、无兼容性影响。
