@@ -13,6 +13,12 @@ WORKDIR /src
 
 # 先只拷贝依赖清单，最大化利用镜像层缓存
 COPY go.mod go.sum ./
+
+# 可选：构建机无法直连 proxy.golang.org 时（如境内网络），
+# 用 --build-arg GOPROXY=https://goproxy.cn,direct 覆盖；留空 = Go 默认。
+ARG GOPROXY
+ENV GOPROXY=${GOPROXY:-}
+
 RUN go mod download
 
 COPY . .
