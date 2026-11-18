@@ -1,6 +1,6 @@
 # 智维面板 ZhiweiPanel
 
-**轻量级自托管建站面板 · v0.5.0**
+**轻量级自托管建站面板 · v0.5.1**
 
 智维面板（ZhiweiPanel）把"建站面板"这件事收敛到**网站管理本身**：域名、网站目录、SSL、PHP、限流、防盗链、防篡改、日志、告警、计划任务、备份。刻意不做宝塔那套周边（FTP、容器编排、面板市场），把功能面收窄到能一次交付、长期维护得住的规模——软件商店也只做「已安装检测 + 安装命令提示」的只读目录，不自动安装/卸载任何东西。
 
@@ -126,7 +126,7 @@ docker compose logs -f
 | `-conf` | string | `/opt/zhiweipanel/nginx/conf.d` | nginx `conf.d` 目录（http 级配置与 catch-all 的落盘位置） |
 | `-site-conf` | string | 空 | 站点 vhost 目录，留空则与 `-conf` 相同 |
 | `-cert-dir` | string | 空 | 证书目录，留空则用 `<data>/certs` |
-| `-backup-dir` | string | 空 | 备份目录，留空则用 `<data>/backups`。**注意**：当前该参数只影响目录创建，备份文件实际落在 `<data>/backup/{site,database}/`（见「已知限制」第 16 条） |
+| `-backup-dir` | string | 空 | 站点/数据库备份根目录。留空 = `<data>/backup`（历史默认，老部署的备份记录都指向那里）；显式设置后**新的备份**写到 `<backup-dir>/{site,database}/`，已有的旧备份记录与文件不受影响 |
 | `-runtime` | string | `host` | 运行时：`host`（systemd 管 nginx）或 `docker`（`docker exec` 管容器 nginx） |
 | `-nginx` | string | `nginx` | nginx 可执行文件路径。宿主机模式下建议写绝对路径（如 `/usr/sbin/nginx`） |
 | `-nginx-unit` | string | 空（= `nginx`） | nginx 的 systemd 服务名。nginx 由**自定义单元**托管时必须填（如 `aa_nginx`、`openresty`），否则状态页显示"未运行"，且配置下发时的 `systemctl reload` 会打错单元 |
@@ -488,4 +488,3 @@ type Driver interface {
 11. **`-http-port` 只在 `-tls` 开启时生效**。纯 HTTP 模式下不会起 301 重定向 listener。
 12. **数据库密码只能重置、不能查看**。创建时一次性明文回显，之后任何读路径都拿不到明文。
 13. **告警类型是固定枚举**（`status_5xx` / `traffic_quota` / `cert_expiry` / `site_down` / `tamper` / `nginx_config` / `config_drift`），前端下拉由后端 `GET /api/alert-types` 动态下发，新增类型必须同时改后端检查器。
-14. **`-backup-dir` 目前只创建目录，不改变备份落盘位置**。备份子系统固定写到 `<data>/backup/site/<id>.tar.gz` 与 `<data>/backup/database/<id>.sql.gz`；`-backup-dir` 指定的目录（默认 `<data>/backups`）会被创建但不被使用。

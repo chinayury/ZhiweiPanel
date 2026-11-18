@@ -56,6 +56,10 @@ type Service struct {
 	dataDir    string
 	certDir    string
 	backupRoot string
+	// backupDirCustom 是 -backup-dir 显式注入的自定义备份根目录。
+	// 空 = 用历史默认 <data>/backup（与 backupRoot 字段无关，后者只用于
+	// 删站时清理遗留的按站点分目录，两套路径互不影响）。
+	backupDirCustom string
 	// sslDir 是 dummy 自签证书的存放目录。
 	sslDir string
 	// publicPort 全局对外端口（v0.2.1）。0 = 用 site.ListenPorts。
@@ -98,6 +102,26 @@ func (s *Service) DB() *store.DB { return s.db }
 
 // DataDir 暴露数据目录（备份、根凭据、证书等的根路径）。
 func (s *Service) DataDir() string { return s.dataDir }
+
+// SetBackupDir 设置自定义备份根目录（main.go 用 -backup-dir 注入）。
+// 留空 = 保持历史默认 `<data>/backup`（老部署的备份记录都指向那里，
+// 改默认值会让旧记录的下载/恢复失效，所以只在显式设置时生效）。
+func (s *Service) SetBackupDir(dir string) {
+	if dir != "" {
+		s.backupDirCustom = dir
+	}
+}
+
+// BackupRoot 返回站点/数据库备份的落盘根目录：
+// 显式设置过 -backup-dir 时用它，否则 `<data>/backup`（历史默认）。
+// backup 包的写入（BackupSite/BackupDatabase）与孤儿文件清理
+// （PruneOrphanFiles）都以这里为准。
+func (s *Service) BackupRoot() string {
+	if s.backupDirCustom != "" {
+		return s.backupDirCustom
+	}
+	return filepath.Join(s.dataDir, "backup")
+}
 
 // Driver 暴露运行时驱动。
 func (s *Service) Driver() driver.Driver { return s.drv }

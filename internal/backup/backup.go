@@ -58,8 +58,7 @@ func BackupSite(ctx context.Context, svc *service.Service, site *model.Site) (*m
 		return nil, fmt.Errorf("站点根目录不存在: %w", err)
 	}
 
-	dataDir := svc.DataDir()
-	outDir := filepath.Join(dataDir, "backup", "site")
+	outDir := filepath.Join(svc.BackupRoot(), "site")
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, err
 	}
@@ -211,8 +210,7 @@ func BackupDatabase(ctx context.Context, svc *service.Service, dbName string) (*
 		dbName,
 	}
 
-	dataDir := svc.DataDir()
-	outDir := filepath.Join(dataDir, "backup", "database")
+	outDir := filepath.Join(svc.BackupRoot(), "database")
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, err
 	}
@@ -317,9 +315,9 @@ func PruneOrphanFiles(svc *service.Service, kind model.BackupKind) (int, error) 
 	var dir string
 	switch kind {
 	case model.BackupSite:
-		dir = filepath.Join(svc.DataDir(), "backup", "site")
+		dir = filepath.Join(svc.BackupRoot(), "site")
 	case model.BackupDatabase:
-		dir = filepath.Join(svc.DataDir(), "backup", "database")
+		dir = filepath.Join(svc.BackupRoot(), "database")
 	default:
 		return 0, nil
 	}

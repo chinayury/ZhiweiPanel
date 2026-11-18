@@ -36,6 +36,31 @@
 
 ---
 
+## v0.5.1 — 修复：`-backup-dir` 现在真正生效（2026-11-23）
+
+**定位**：缺陷修复（README 已知限制挂账项）。patch，默认行为不变、无破坏性变更。
+
+### 修复
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| `-backup-dir` 只创建目录，备份文件实际固定写在 `<data>/backup/{site,database}/`（已知限制挂账，README 16→13 条演进过程中长期存在） | 备份子系统（`BackupSite` / `BackupDatabase` / `PruneOrphanFiles`）直接用 `svc.DataDir()` 拼 `<data>/backup`，flag 只参与了启动时的 MkdirAll | 新增 `Service.SetBackupDir` / `Service.BackupRoot`（main 用 `-backup-dir` 注入）；backup 包三处落盘/清理路径全部改走 `BackupRoot()` |
+
+### 语义（向后兼容）
+
+- **留空（默认）**：备份仍写 `<data>/backup/{site,database}/`——老部署的备份记录
+  都指向那里，改默认值会让旧记录的下载/恢复失效。
+- **显式设置**：新的备份写到 `<backup-dir>/{site,database}/`；已有记录与文件不受影响。
+  注意切换目录后，旧目录的历史文件不再被孤儿清理（PruneOrphanFiles）扫描，需要迁移的话手工挪。
+- flag 帮助文本同步更正（原来是「留空则用 data/backups」，与实际不符）。
+
+### 文档
+
+- README：参数表 `-backup-dir` 行更正；已知限制移除 #14（14 → 13 条）。
+- USAGE.md：七、备份新增「7.0 备份落盘位置」。
+
+---
+
 ## v0.5.0 — 新增：软件商店、站点级自定义 Nginx 配置（预校验）、安全头与渲染重构（2026-11-21）
 
 **定位**：新增用户可见功能（minor）。**本批功能已先行部署到生产实机并通过 8 条验收**

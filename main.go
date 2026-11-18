@@ -67,7 +67,7 @@ func main() {
 		confDir      = flag.String("conf", "/opt/zhiweipanel/nginx/conf.d", "nginx conf.d 目录（宿主机模式）")
 		siteConfDir  = flag.String("site-conf", "", "站点配置目录，留空则用 conf")
 		certDir      = flag.String("cert-dir", "", "证书目录，留空则用 data/certs")
-		backupDir    = flag.String("backup-dir", "", "备份目录，留空则用 data/backups")
+		backupDir    = flag.String("backup-dir", "", "站点/数据库备份根目录，留空则用 <data>/backup（历史默认）")
 		runtimeOpt   = flag.String("runtime", "host", "运行时：host 或 docker")
 		nginxBin     = flag.String("nginx", "nginx", "nginx 可执行文件")
 		nginxUnit    = flag.String("nginx-unit", "", "nginx 的 systemd 服务名（留空 = nginx）。nginx 由自定义单元托管时（如 aa_nginx.service、openresty.service）必须填，否则状态显示为未运行")
@@ -199,6 +199,9 @@ func main() {
 	}
 
 	svc := service.New(db, drv, acmeMgr, alertEngine, mailerInst, mysqlClient, *dataDir, *certDir, *publicPort, *disableIPv6)
+	// -backup-dir 显式设置时作为站点/数据库备份的落盘根目录；
+	// 留空保持历史默认 <data>/backup（老部署的备份记录都指向那里）。
+	svc.SetBackupDir(*backupDir)
 	defer func() {
 		if mysqlClient != nil {
 			_ = mysqlClient.Close()
