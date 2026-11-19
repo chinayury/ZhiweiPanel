@@ -54,10 +54,15 @@ package version
 // v0.5.1 = 修复：-backup-dir 只创建目录、不改变备份落盘位置（README 已知
 // 限制挂账项）。现在显式设置 -backup-dir 时，站点/数据库备份与孤儿清理
 // 都以它为根目录；留空保持历史默认 <data>/backup，老部署不受影响。
+// v0.6.0 = 新增用户可见功能：两步验证（TOTP）。登录除密码外需认证器 App
+// 的 6 位动态口令（第二阶段 pending 凭据 2 分钟/一次性/5 次错误作废）；
+// 管理端点 /api/2fa/*（setup/enable/disable/status）仅限浏览器会话，
+// API Token 一律 403；已启用 2FA 时跳过异常登录邮件检测。零第三方依赖
+// （crypto/hmac + base32），密钥存 users 表新增两列。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.5.1"
+const Version = "0.6.0"
 
 // History 已经发布过的历史版本号。
 //
@@ -85,6 +90,7 @@ var History = []string{
 	"0.3.0",
 	"0.4.0",
 	"0.5.0",
+	"0.5.1",
 }
 
 // All 返回当前版本与全部历史版本号。

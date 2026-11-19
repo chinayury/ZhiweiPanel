@@ -277,6 +277,19 @@ CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
 			return err
 		}
 	}
+
+	// 兼容旧库：users 表补两步验证（TOTP）列。
+	// totp_secret 存 base32 密钥（认证器共享密钥，验证时需要原文，无法哈希）；
+	// totp_enabled=0 表示 setup 了但还没验证过首码（未启用）。
+	for _, stmt := range []string{
+		`ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := d.db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
 	// 兼容旧库：sites 表补 edate（到期时间）
 	for _, stmt := range []string{
 		`ALTER TABLE sites ADD COLUMN edate TIMESTAMP`,
@@ -716,6 +729,56 @@ func (d *DB) GetUser(username string) (hash, role string, err error) {
 		return "", "", model.ErrNotFound
 	}
 	return hash, role, err
+}
+
+// SetTOTPSecret 存放两步验证密钥（base32）。
+//
+// enabled=false 表示「已生成密钥但还没验证过首码」——setup/enable 两步走，
+// 只有验证过动态口令才真正启用。覆盖同名用户的旧 pending 密钥。
+func (d *DB) SetTOTPSecret(username, secret string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`UPDATE users SET totp_secret=?, totp_enabled=0 WHERE username=?`,
+		secret, username)
+	return err
+}
+
+// EnableTOTP 验证首码通过后启用两步验证。
+func (d *DB) EnableTOTP(username string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	res, err := d.db.Exec(`UPDATE users SET totp_enabled=1 WHERE username=? AND totp_secret<>''`,
+		username)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
+// DisableTOTP 关闭两步验证（清空密钥）。幂等：未启用时调用也返回成功。
+func (d *DB) DisableTOTP(username string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`UPDATE users SET totp_secret='', totp_enabled=0 WHERE username=?`,
+		username)
+	return err
+}
+
+// GetTOTP 读取两步验证状态。
+func (d *DB) GetTOTP(username string) (secret string, enabled bool, err error) {
+	var e int
+	err = d.db.QueryRow(`SELECT totp_secret, totp_enabled FROM users WHERE username=?`, username).
+		Scan(&secret, &e)
+	if err == sql.ErrNoRows {
+		return "", false, model.ErrNotFound
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return secret, e == 1, nil
 }
 
 // UserProfile 用户的扩展资料（含邮箱、最近登录）。原 GetUser 只返

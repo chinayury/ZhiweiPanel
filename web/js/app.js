@@ -266,6 +266,8 @@ function renderLogin() {
       e.preventDefault();
       if (state.phase === 'login') {
         doLogin(state, uInput, pInput, cInput, errBox, hintBox, submitBtn, form);
+      } else if (state.phase === 'totp') {
+        doVerifyTOTP(state, cInput, errBox, hintBox, submitBtn, form);
       } else if (state.phase === 'verify') {
         doVerifyChallenge(state, cInput, errBox, hintBox, submitBtn, form);
       } else if (state.phase === 'reset1') {
@@ -347,6 +349,22 @@ async function doLogin(state, uInput, pInput, cInput, errBox, hintBox, submitBtn
   submitBtn.textContent = '登录中…';
   try {
     const res = await api.auth.login(username, password);
+    if (res.totp_required && res.login_token) {
+      // 两步验证：密码已通过，进入动态口令阶段
+      state.phase = 'totp';
+      state.loginToken = res.login_token;
+      state.username = username;
+      form.querySelector('#loginRowU').style.display = 'none';
+      form.querySelector('#loginRowP').style.display = 'none';
+      form.querySelector('#loginRowC').style.display = '';
+      submitBtn.textContent = '验 证';
+      hintBox.textContent = '请输入认证器 App 中的 6 位动态口令';
+      hintBox.style.display = 'block';
+      document.querySelector('.login-back-link').style.display = '';
+      setTimeout(() => cInput.focus(), 30);
+      submitBtn.disabled = false;
+      return;
+    }
     if (res.need_verify && res.challenge_id) {
       // 异常登录：进入验证码阶段
       state.phase = 'verify';
@@ -403,9 +421,38 @@ async function doVerifyChallenge(state, cInput, errBox, hintBox, submitBtn, form
   }
 }
 
+// 两步验证第二步：密码已通过（login_token），提交认证器动态口令换 session。
+async function doVerifyTOTP(state, cInput, errBox, hintBox, submitBtn, form) {
+  errBox.style.display = 'none';
+  const code = cInput.value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    errBox.textContent = '请输入 6 位动态口令';
+    errBox.style.display = 'block';
+    return;
+  }
+  submitBtn.disabled = true;
+  submitBtn.textContent = '验证中…';
+  try {
+    const res = await api.auth.totpVerify(state.loginToken, code);
+    store.user = { username: res.username || state.username, role: res.role || '' };
+    await loadSettings();
+    const app = document.getElementById('app');
+    clear(app).appendChild(buildShell());
+    if (!location.hash || location.hash === '#/' || location.hash === '#') location.hash = '#/dashboard';
+    else handleRoute();
+  } catch (err) {
+    errBox.textContent = err.message || '动态口令错误';
+    errBox.style.display = 'block';
+    submitBtn.disabled = false;
+    submitBtn.textContent = '验 证';
+    // 连续错误 5 次后端会作废本次登录凭据，需重新输入密码
+  }
+}
+
 function resetToLogin(state, form, errBox, hintBox, cInput, pInput, uInput, npInput, submitBtn) {
   state.phase = 'login';
   state.challengeId = null;
+  state.loginToken = null;
   state.resetUsername = '';
   form.querySelector('#loginRowU').style.display = '';
   form.querySelector('#loginRowP').style.display = '';

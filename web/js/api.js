@@ -135,6 +135,15 @@ export const api = {
     // 成功由后端直接写 session cookie（通过 Set-Cookie 头），前端不需要拿 token。
     verifyChallenge: (challenge_id, code) =>
       http.post('/auth/verify-challenge', { challenge_id, code }),
+    // 两步验证第二步：密码通过后（login_token = 后端 pending 凭据）提交动态口令，
+    // 成功由后端直接写 session cookie。
+    totpVerify: (login_token, code) =>
+      http.post('/auth/verify-totp', { login_token: login_token, code: code }),
+    // 两步验证管理（浏览器会话专用，API Token 403）。
+    status2FA: () => http.get('/2fa/status'),
+    setup2FA: () => http.post('/2fa/setup', {}),
+    enable2FA: (code) => http.post('/2fa/enable', { code: code }),
+    disable2FA: (code) => http.post('/2fa/disable', { code: code }),
     // 忘记密码：两步流程（申请验证码 → 提交验证码 + 新密码）。
     //
     // 这两个端点挂在主 mux 上（未登录也可访问），但仍然走 request() 封装，

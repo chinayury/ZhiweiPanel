@@ -36,6 +36,45 @@
 
 ---
 
+## v0.6.0 — 新增：两步验证（TOTP）（2026-11-19）
+
+**定位**：新增用户可见功能（登录安全）。**默认关闭**——不开启时登录行为与旧版完全一致；
+无破坏性变更。零第三方依赖（HMAC-SHA1 + base32 全在标准库）。
+
+### 新增
+
+| 项 | 说明 |
+|----|------|
+| **登录第二因子（TOTP）** | 已启用的用户：密码通过后进入动态口令阶段（复用登录页现成的验证码输入形态），返回 `totp_required` + 一次性 `login_token`（2 分钟 TTL、5 次错误即作废，逼攻击者重过密码关）；校验通过才下发 session。校验容忍 ±30 秒时钟漂移 |
+| **管理端点** | `POST /api/2fa/setup`（生成 base32 密钥 + otpauth:// 链接，pending 未启用）、`POST /api/2fa/enable {code}`（验证首码后启用）、`POST /api/2fa/disable {code}`（要求当前有效口令才能降级）、`GET /api/2fa/status` |
+| **会话专用** | 2FA 管理端点（setup/enable/disable/status）**仅限浏览器会话**——泄漏一个 write scope API Token 不能关闭登录的第二因子，Token 一律 403 |
+| **设置页** | 设置 → 两步验证（TOTP）：状态展示、开启（密钥 + otpauth 链接 + 首码确认）、关闭（口令确认） |
+| **异常检测让位** | 已启用 2FA 时跳过 1.2 的异常登录邮件验证（动态口令是更强的第二因子，两个第二因子串联无额外收益） |
+
+### 实现
+
+- `internal/twofa`（新包）：RFC 6238（HMAC-SHA1、30 秒步长、6 位、±1 窗口）+ base32
+  密钥生成/解码 + otpauth URI，**零第三方依赖**；RFC 附录 B 测试向量全过。
+- 存储：users 表新增 `totp_secret` / `totp_enabled` 两列（ALTER TABLE 兼容旧库）。
+- 交互：登录页复用既有两阶段形态（密码 → 动态口令），设置页复用既有卡片/弹窗形态。
+
+### 质量
+
+- `internal/twofa/totp_test.go`：RFC 6238 附录 B 测试向量（密钥 ASCII 形态 + base32
+  形态双路径）、±1 窗口/±2 步拒绝、前导零保留、非法输入、otpauth URI。
+- `internal/api/twofa_test.go`（7 用例）：完整链路（setup → 错码 400 → 对码 200 →
+  status true → 错码 disable 401 → 对码 disable 200）、登录 totp_required + 不发
+  session、pending 一次性（重放 401）、5 次错误作废（对码也 401）、API Token 403、
+  未认证 401。
+
+### 兼容性说明
+
+- **默认关闭**：不开启时登录行为与 v0.5.1 完全一致。
+- 存储迁移：users 表 ALTER TABLE 新增两列（有默认值，旧库自动补列）。
+- 已启用 2FA 的用户：登录流程多一步动态口令；关闭 2FA 需出示当前有效口令。
+
+---
+
 ## v0.5.1 — 修复：`-backup-dir` 现在真正生效（2026-11-23）
 
 **定位**：缺陷修复（README 已知限制挂账项）。patch，默认行为不变、无破坏性变更。

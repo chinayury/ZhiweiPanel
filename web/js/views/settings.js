@@ -217,6 +217,112 @@ export async function render(container) {
     });
   }
 
+  // ---------------- 两步验证（TOTP） ----------------
+  const twofaBox = h('div', { class: 'card-body' }, loading('加载两步验证状态…'));
+  container.appendChild(h('div', { class: 'card' }, [
+    h('div', { class: 'card-title' }, h('span', {}, '两步验证（TOTP）')),
+    twofaBox,
+  ]));
+
+  async function draw2FA() {
+    clear(twofaBox);
+    let enabled = false;
+    try {
+      const st = await api.auth.status2FA();
+      enabled = !!st.enabled;
+    } catch (e) {
+      clear(twofaBox).appendChild(errorState(e.message || '加载失败', () => draw2FA()));
+      return;
+    }
+    clear(twofaBox).appendChild(h('div', {}, [
+      h('div', { class: 'runtime-brief' }, [
+        enabled ? tag('已启用', 'success') : tag('未启用', 'warning'),
+        h('span', { class: 'field-hint' }, enabled
+          ? '登录时除密码外还需输入认证器 App 的 6 位动态口令。'
+          : '开启后，登录除密码外还需输入认证器 App（Google Authenticator 等）的 6 位动态口令。'),
+      ]),
+      h('div', { class: 'inline-actions' }, [
+        enabled
+          ? button('关闭两步验证', show2FADisable, 'danger', 'lock')
+          : button('开启两步验证', show2FASetup, 'primary', 'key'),
+      ]),
+    ]));
+  }
+
+  // 开启流程：setup 拿密钥 → 用户扫码/录入 → 提交首码 → enable。
+  // 密钥只在 setup 响应里出现一次，关闭弹窗后需重新 setup（后端会覆盖 pending 密钥）。
+  async function show2FASetup() {
+    let setup = null;
+    try {
+      setup = await api.auth.setup2FA();
+    } catch (e) {
+      toast(e.message || '生成密钥失败', 'error');
+      return;
+    }
+    const codeInput = textInput('', null, { placeholder: '6 位动态口令' });
+    const errBox = h('div', { class: 'login-error', style: { display: 'none' } });
+    const m = modal({
+      title: '开启两步验证',
+      width: '560px',
+      content: h('div', {}, [
+        h('div', { class: 'field-hint' }, '第 1 步：用认证器 App（Google Authenticator 等）扫描下面链接，或手动录入密钥：'),
+        codeBox(setup.secret, {}),
+        h('div', { class: 'field-hint' }, [
+          h('span', {}, 'otpauth 链接：'),
+          h('a', { href: setup.otpauth, class: 'mono-text' }, setup.otpauth),
+        ]),
+        h('div', { class: 'field-hint' }, '第 2 步：输入认证器显示的 6 位动态口令完成启用：'),
+        field('动态口令', codeInput),
+        errBox,
+      ]),
+      footer: [
+        button('取消', () => m.close(), 'default'),
+        button('确认启用', async () => {
+          errBox.style.display = 'none';
+          try {
+            await api.auth.enable2FA(codeInput.value.trim());
+            toast('两步验证已启用，下次登录需要输入动态口令', 'success');
+            m.close();
+            await draw2FA();
+          } catch (e) {
+            errBox.textContent = e.message || '启用失败';
+            errBox.style.display = 'block';
+          }
+        }, 'primary'),
+      ],
+    });
+  }
+
+  // 关闭流程：要求出示当前有效口令——能出示动态口令的人才有资格降级防护。
+  async function show2FADisable() {
+    const codeInput = textInput('', null, { placeholder: '6 位动态口令' });
+    const errBox = h('div', { class: 'login-error', style: { display: 'none' } });
+    const m = modal({
+      title: '关闭两步验证',
+      width: '460px',
+      content: h('div', {}, [
+        h('div', { class: 'field-hint' }, '关闭后登录仅需密码。请输入认证器当前的 6 位动态口令确认操作：'),
+        field('动态口令', codeInput),
+        errBox,
+      ]),
+      footer: [
+        button('取消', () => m.close(), 'default'),
+        button('确认关闭', async () => {
+          errBox.style.display = 'none';
+          try {
+            await api.auth.disable2FA(codeInput.value.trim());
+            toast('两步验证已关闭', 'success');
+            m.close();
+            await draw2FA();
+          } catch (e) {
+            errBox.textContent = e.message || '关闭失败';
+            errBox.style.display = 'block';
+          }
+        }, 'danger'),
+      ],
+    });
+  }
+
   function drawStatus(box, st) {
     clear(box);
     if (!st) {

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -15,6 +17,7 @@ import (
 	"github.com/zhiwei/panel/internal/model"
 	"github.com/zhiwei/panel/internal/service"
 	"github.com/zhiwei/panel/internal/store"
+	"github.com/zhiwei/panel/internal/twofa"
 )
 
 // sessionTTL 会话有效期。
@@ -164,6 +167,10 @@ type loginResponse struct {
 	NeedVerify  bool   `json:"need_verify,omitempty"`
 	ChallengeID string `json:"challenge_id,omitempty"`
 	Reason      string `json:"reason,omitempty"`
+	// TOTPRequired/LoginToken：用户启用了两步验证——密码已通过但还差动态口令。
+	// login_token 是 2 分钟内一次性有效的临时凭据，交给 verify-totp 换 session。
+	TOTPRequired bool   `json:"totp_required,omitempty"`
+	LoginToken   string `json:"login_token,omitempty"`
 }
 
 // handleLogin 登录第一步：密码校验。
@@ -237,6 +244,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	limiter.success(key)
 	accountLimiter.success(acctKey)
+
+	// 两步验证：已启用 TOTP 的用户，密码通过后进入动态口令阶段。
+	// 此时**不发 session**、也跳过异常登录邮件检测——动态口令证明持有认证器，
+	// 是比 IP/UA 异常更强的信号（两个第二因子串联没有额外收益）。
+	if _, enabled, gerr := s.svc.DB().GetTOTP(req.Username); gerr == nil && enabled {
+		tok, terr := s.newTOTPPending(req.Username)
+		if terr != nil {
+			writeError(w, http.StatusInternalServerError, errInternal)
+			return
+		}
+		writeJSON(w, http.StatusOK, loginResponse{
+			OK:           false,
+			TOTPRequired: true,
+			LoginToken:   tok,
+			Username:     req.Username,
+		})
+		return
+	}
 
 	// 密码通过 → 异常登录检测
 	ip := s.clientIP(r)
@@ -338,6 +363,132 @@ func (s *Server) handleVerifyChallenge(w http.ResponseWriter, r *http.Request) {
 	s.issueSession(w, r, c.Username, role)
 	log.Printf("[auth] challenge login OK for %s from %s", c.Username, ip)
 	writeJSON(w, http.StatusOK, loginResponse{OK: true, Username: c.Username, Role: role})
+}
+
+// totpPendingTTL / totpMaxAttempts：pending 登录凭据的时效与错误上限。
+// 动态口令是 6 位数字、30 秒一换，5 次尝试在 90 秒有效窗内的成功率约百万分之六，
+// 远低于可接受阈值；超限作废 pending，逼攻击者重新过密码这一关。
+const (
+	totpPendingTTL  = 2 * time.Minute
+	totpMaxAttempts = 5
+)
+
+// newTOTPPending 生成一次性 pending 凭据（密码已通过、等动态口令）。
+func (s *Server) newTOTPPending(username string) (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	tok := hex.EncodeToString(b)
+	s.totpMu.Lock()
+	defer s.totpMu.Unlock()
+	s.totpPending[tok] = totpPendingLogin{
+		username: username,
+		expires:  time.Now().Add(totpPendingTTL),
+	}
+	return tok, nil
+}
+
+// peekTOTPPending 取 pending 并计一次尝试。
+// 过期 / 不存在 / 超过 5 次尝试 → ok=false（pending 已被清掉）。
+func (s *Server) peekTOTPPending(tok string) (totpPendingLogin, bool) {
+	s.totpMu.Lock()
+	defer s.totpMu.Unlock()
+	p, ok := s.totpPending[tok]
+	if !ok {
+		return p, false
+	}
+	if time.Now().After(p.expires) {
+		delete(s.totpPending, tok)
+		return p, false
+	}
+	p.attempts++
+	if p.attempts > totpMaxAttempts {
+		delete(s.totpPending, tok)
+		return totpPendingLogin{}, false
+	}
+	s.totpPending[tok] = p
+	return p, true
+}
+
+// consumeTOTPPending 成功路径：消费掉 pending（一次性）。
+func (s *Server) consumeTOTPPending(tok string) {
+	s.totpMu.Lock()
+	defer s.totpMu.Unlock()
+	delete(s.totpPending, tok)
+}
+
+// handleVerifyTOTP POST /api/auth/verify-totp {login_token, code}
+// 两步验证第二步：校验动态口令，通过后下发 session cookie。
+//
+// 前提：login_token 是密码通过后签发的 pending 凭据（2 分钟、一次性语义、
+// 5 次错误作废）。动态口令校验基于用户**当前启用**的密钥——
+// 若用户在两步之间关闭了 2FA，则密码通过即放行（密钥已清空）。
+//
+// 失败不消费 pending（剩余尝试次数内可重试），但 5 次后 pending 作废。
+func (s *Server) handleVerifyTOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, model.ErrBadRequest)
+		return
+	}
+	var body struct {
+		LoginToken string `json:"login_token"`
+		Code       string `json:"code"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	p, ok := s.peekTOTPPending(body.LoginToken)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("登录会话已过期，请重新输入密码"))
+		return
+	}
+	// 限流：按 IP+username（与登录同款），双保险
+	key := s.clientKey(r, p.username)
+	if ok, wait := limiter.allow(key); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(wait))
+		writeError(w, http.StatusTooManyRequests, errors.New("尝试次数过多，请稍后再试"))
+		return
+	}
+	secret, enabled, gerr := s.svc.DB().GetTOTP(p.username)
+	if gerr == model.ErrNotFound {
+		// 用户在两步之间被删除——pending 作废，拒绝登录
+		s.consumeTOTPPending(body.LoginToken)
+		writeError(w, http.StatusUnauthorized, errors.New("登录会话已过期，请重新输入密码"))
+		return
+	}
+	if gerr != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	if !enabled || secret == "" {
+		// pending 有效但 2FA 已被关闭 → 直接放行（密钥都清了，没有第二因子可验）
+		s.consumeTOTPPending(body.LoginToken)
+		_, role, _ := s.svc.DB().GetUser(p.username)
+		s.issueSession(w, r, p.username, role)
+		log.Printf("[auth] totp skipped for %s (2fa disabled mid-login)", p.username)
+		writeJSON(w, http.StatusOK, loginResponse{OK: true, Username: p.username, Role: role})
+		return
+	}
+	if !twofa.Validate(secret, body.Code, time.Now()) {
+		limiter.fail(key)
+		writeError(w, http.StatusUnauthorized, errors.New("动态口令错误"))
+		return
+	}
+	limiter.success(key)
+	s.consumeTOTPPending(body.LoginToken)
+
+	ip := s.clientIP(r)
+	ua := r.UserAgent()
+	if err := s.svc.DB().UpdateLastLogin(p.username, ip, ua); err != nil {
+		log.Printf("[auth] update last_login failed: %v", err)
+	}
+	_, role, _ := s.svc.DB().GetUser(p.username)
+	s.issueSession(w, r, p.username, role)
+	s.handleAuditLogin(r, p.username, "auth.login", "登录成功（含两步验证）", http.StatusOK)
+	log.Printf("[auth] totp login OK for %s from %s", p.username, ip)
+	writeJSON(w, http.StatusOK, loginResponse{OK: true, Username: p.username, Role: role})
 }
 
 // handlePasswordResetRequest POST /api/auth/password-reset/request {username}

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/zhiwei/panel/internal/acme"
 	"github.com/zhiwei/panel/internal/model"
@@ -23,6 +25,19 @@ type Server struct {
 	// 留空 = 不信任任何代理，一律使用直连地址（这是最安全的默认）。
 	// 详见 clientip.go。
 	trustedProxies *trustedProxySet
+
+	// totpPending 两步验证登录第二阶段的临时凭据（密码已通过、等动态口令）。
+	// 内存态：2 分钟 TTL、一次性消费、5 次错误即作废（重走密码登录）。
+	// 面板重启即清空——重新登录即可，无需持久化。
+	totpMu      sync.Mutex
+	totpPending map[string]totpPendingLogin
+}
+
+// totpPendingLogin 一次「密码已通过、等待动态口令」的登录会话。
+type totpPendingLogin struct {
+	username string
+	expires  time.Time
+	attempts int
 }
 
 // NewServer 创建 HTTP 服务。
@@ -34,6 +49,7 @@ func NewServer(svc *service.Service, secureCookie bool, trustedProxies []string)
 		svc:            svc,
 		secureCookie:   secureCookie,
 		trustedProxies: newTrustedProxySet(trustedProxies),
+		totpPending:    make(map[string]totpPendingLogin),
 	}
 }
 
@@ -47,6 +63,9 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("/api/auth/me", s.handleMe)
 	mux.HandleFunc("/api/auth/password", s.handleChangePassword)
 	mux.HandleFunc("/api/auth/verify-challenge", s.handleVerifyChallenge)
+	// TOTP 第二步（密码已通过、等动态口令）——登录流程的一部分，未认证可达；
+	// 暴力防护靠 pending token 的尝试上限 + 登录限流器。
+	mux.HandleFunc("/api/auth/verify-totp", s.handleVerifyTOTP)
 	mux.HandleFunc("/api/auth/password-reset/request", s.handlePasswordResetRequest)
 	mux.HandleFunc("/api/auth/password-reset/confirm", s.handlePasswordResetConfirm)
 
@@ -56,6 +75,12 @@ func (s *Server) Routes() *http.ServeMux {
 		// 审计中间件放在鉴权之后：这样拿得到调用者身份，也拿得到响应码。
 		protected.Handle(pattern, s.authMiddleware(s.auditMiddleware(h)))
 	}
+	// 两步验证管理（setup/enable/disable/status）：浏览器会话专用，
+	// API Token 一律 403——泄漏一个 write Token 不应能关闭登录的第二因子。
+	reg("/api/2fa/setup", s.handle2FASetup)
+	reg("/api/2fa/enable", s.handle2FAEnable)
+	reg("/api/2fa/disable", s.handle2FADisable)
+	reg("/api/2fa/status", s.handle2FAStatus)
 	reg("/api/sites", s.handleSites)
 	reg("/api/sites/", s.handleSiteByID)
 	reg("/api/certs", s.handleCerts)
