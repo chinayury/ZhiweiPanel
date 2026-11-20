@@ -248,6 +248,21 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+
+-- v0.7.0: 宿主机指标持久化（分钟粒度趋势）。
+-- 内存环形缓冲只保留最近约 20 分钟的十秒级细节，重启即丢；
+-- 本表由后台采集器每分钟落一条降采样数据，让"近 24 小时"曲线跨重启存在。
+-- ts 用 Unix 秒并做主键：范围查询免转换，同一分钟重复写入天然覆盖（幂等）。
+-- 保留期由调用方定期 PruneMetricsSamples 清理，不靠触发器。
+CREATE TABLE IF NOT EXISTS metrics_samples (
+    ts          INTEGER PRIMARY KEY,
+    cpu         REAL NOT NULL DEFAULT 0,
+    mem         REAL NOT NULL DEFAULT 0,
+    load1       REAL NOT NULL DEFAULT 0,
+    disk        REAL NOT NULL DEFAULT 0,
+    net_rx      REAL NOT NULL DEFAULT 0,
+    net_tx      REAL NOT NULL DEFAULT 0
+);
 `
 	if _, err := d.db.Exec(schema); err != nil {
 		return err

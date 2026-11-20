@@ -305,6 +305,9 @@ export const api = {
     // v0.2.2: 宿主机运行指标（CPU/内存/磁盘/负载/网络）。
     // 返回 {current, history}，history 是内存环形缓冲里的最近若干条采样。
     metrics: () => http.get('/system/metrics'),
+    // v0.7.0: 持久化的分钟级指标采样（重启不丢）。
+    // 返回 {hours, interval_sec, history}，history 按旧 → 新排序。
+    metricsHistory: (hours = 24) => http.get(`/system/metrics/history?hours=${encodeURIComponent(hours)}`),
     // v0.2.2: nginx 配置历史快照。
     configHistory: {
       list: () => http.get('/system/config-history'),

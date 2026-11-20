@@ -287,6 +287,9 @@ func main() {
 	// HTTP 查询直接读缓存，不会阻塞。
 	svc.StartMetricsCollector(ctx)
 
+	// v0.7.0: 指标持久化。每分钟降采样一行落库，"近 24 小时"曲线跨重启存在。
+	svc.StartMetricsRecorder(ctx)
+
 	// v0.2.0: 启动计划任务调度器。后台 goroutine 每 30s 扫一次 DB，
 	// 把 enabled=1 且 next_run_at<=now 的任务 fork 执行。
 	cronSched := cron.New(svc, db, alertEngine)

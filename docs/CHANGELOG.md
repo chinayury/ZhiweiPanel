@@ -36,6 +36,37 @@
 
 ---
 
+## v0.7.0 — 新增：指标持久化（2026-11-21）
+
+**定位**：新增用户可见功能（监控）。无破坏性变更：旧库自动建表，不开启任何开关行为不变
+（指标落库默认开启，但只影响新增的趋势曲线，不改变任何既有接口的返回形状）。
+
+### 新增
+
+| 项 | 说明 |
+|----|------|
+| **分钟级指标落库** | 后台采集器在原有内存十秒级历史（约 20 分钟、重启即丢）之外，每分钟降采样一行写入 SQLite `metrics_samples` 表（ts 主键，同一分钟重复写入幂等覆盖）。默认保留 **72 小时**，启动时与每小时周期清理过期行——表上限约 4300 行，对主库与备份体积的影响可忽略 |
+| **历史查询端点** | `GET /api/system/metrics/history?hours=N`（缺省 24，钳位 [1, 72]），返回 `{hours, interval_sec, history}`，采样按旧 → 新排序；鉴权与会话要求与其它读端点一致 |
+| **仪表盘"近 24 小时"曲线** | 宿主机资源卡片在实时迷你曲线（CPU/内存）下方新增近 24 小时 CPU/内存趋势线，前端降采样到 ≤90 点渲染（lineChart 每点渲染圆点+标签，不降采样 1440 点会把 SVG 打爆）；数据不足 2 条时显示提示文案而非空图 |
+| **重启不丢** | 这是本版本的核心承诺：升级/重启后面板不再"曲线从头开始"，近三天的趋势完整保留 |
+
+### 实现
+
+- 模型：`model.MetricsSample`（ts/cpu/mem/load1/disk/net_rx/net_tx 七个字段——监控历史只给人看趋势，
+  故意不把完整 Snapshot 序列化进库，表膨胀与备份变慢是当年内存环形缓冲方案的三个理由，落库方案必须正面回应）。
+- 存储：`metrics_samples` 表（`CREATE TABLE IF NOT EXISTS`，旧库启动时自动创建，无需迁移）；
+  `SaveMetricsSample`（ON CONFLICT 覆盖）/ `ListMetricsSamples`（区间升序）/ `PruneMetricsSamples`（按保留期清理）。
+- 服务：`StartMetricsRecorder`（后台 goroutine、立即返回，与采集器同型——main() 不可被阻塞；
+  db 为 nil 时静默不启动）；分层上采集器（internal/sysinfo）依然不知道 DB 的存在，落库是 service 层的独立节拍。
+- 前端：`api.system.metricsHistory(hours)` + 仪表盘 `drawDailyHistory`（降采样 + 复用既有 lineChart，零图表库）。
+
+### 兼容性说明
+
+- 旧库首次启动自动建 `metrics_samples` 表；旧数据无法补录——曲线从升级那一刻开始积累。
+- `/api/system/metrics` 的响应形状不变（`current` + 内存 `history`），既有消费方无需改动。
+
+---
+
 ## v0.6.0 — 新增：两步验证（TOTP）（2026-11-19）
 
 **定位**：新增用户可见功能（登录安全）。**默认关闭**——不开启时登录行为与旧版完全一致；

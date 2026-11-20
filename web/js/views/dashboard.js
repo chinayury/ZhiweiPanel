@@ -354,6 +354,15 @@ function drawMetrics(card, data) {
     body.appendChild(chartBox);
   }
 
+  // v0.7.0: 近 24 小时趋势（分钟级持久化，重启不丢）。
+  // 与上面的实时迷你曲线互补：实时曲线看毛刺（10 秒级，重启清零），
+  // 这里看长趋势（落库采样）。获取失败静默降级——少一块图，不打扰页面。
+  const dailyBox = h('div', {}, h('div', { class: 'state-box' }, '统计中…'));
+  body.appendChild(dailyBox);
+  api.system.metricsHistory(24)
+    .then((r) => drawDailyHistory(dailyBox, r))
+    .catch(() => clear(dailyBox));
+
   // 其它指标一行小字
   const uptime = Number(cur.uptime_seconds) || 0;
   const days = Math.floor(uptime / 86400);
@@ -366,4 +375,40 @@ function drawMetrics(card, data) {
     `· 磁盘 ${cur.disk_path || '/'}`,
     cur.hostname ? `· ${cur.hostname}` : '',
   ].filter(Boolean).join(' ')));
+}
+
+// drawDailyHistory 渲染"近 24 小时"持久化趋势（CPU + 内存）。
+//
+// 数据是分钟级落库采样（旧 → 新）。必须降采样后再画：lineChart 给每个点
+// 渲染一个圆点加一个 X 轴标签，1440 个点就是近 3000 个 SVG 节点，
+// 标签全部叠死——压到 ≤90 点既流畅又可读。
+function drawDailyHistory(box, data) {
+  const history = (data.history || []).filter((s) => Number.isFinite(Number(s.ts)));
+  clear(box);
+  if (history.length < 2) {
+    box.appendChild(h('div', { class: 'field-hint' },
+      '近 24 小时趋势为分钟级持久化采样，系统运行一段时间后逐步生成（重启不丢失）'));
+    return;
+  }
+  const maxPts = 90;
+  const step = Math.ceil(history.length / maxPts);
+  const pts = history.filter((s, i) => i % step === 0 || i === history.length - 1);
+
+  const grid = h('div', { class: 'grid grid-2' }, [
+    h('div', {}, [
+      h('div', { class: 'field-hint' }, 'CPU 占用率（近 24 小时）'),
+      lineChart(pts.map((s) => ({
+        label: new Date(s.ts * 1000).toTimeString().slice(0, 5),
+        value: Number(s.cpu) || 0,
+      })), { height: 120 }),
+    ]),
+    h('div', {}, [
+      h('div', { class: 'field-hint' }, '内存占用率（近 24 小时）'),
+      lineChart(pts.map((s) => ({
+        label: new Date(s.ts * 1000).toTimeString().slice(0, 5),
+        value: Number(s.mem_percent) || 0,
+      })), { height: 120 }),
+    ]),
+  ]);
+  box.appendChild(grid);
 }

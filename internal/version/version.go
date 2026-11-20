@@ -59,10 +59,13 @@ package version
 // 管理端点 /api/2fa/*（setup/enable/disable/status）仅限浏览器会话，
 // API Token 一律 403；已启用 2FA 时跳过异常登录邮件检测。零第三方依赖
 // （crypto/hmac + base32），密钥存 users 表新增两列。
+// v0.7.0 = 新增用户可见功能：指标持久化。宿主机指标在内存十秒级历史
+// （约 20 分钟）之外，新增分钟级落库采样（metrics_samples 表，72 小时
+// 保留期 + 周期清理），仪表盘新增"近 24 小时"趋势曲线，重启不再清零。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 // History 已经发布过的历史版本号。
 //
@@ -91,6 +94,7 @@ var History = []string{
 	"0.4.0",
 	"0.5.0",
 	"0.5.1",
+	"0.6.0",
 }
 
 // All 返回当前版本与全部历史版本号。

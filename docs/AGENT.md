@@ -64,7 +64,8 @@ curl -X POST https://<panel-host>:8888/api/tokens \
 ## 4. 只读端点（read scope 即可）
 
 `GET /api/sites`、`GET /api/apps`（软件商店目录与安装状态）、`GET /api/system/status`、
-`GET /api/system/metrics`、`GET /api/system/config-history`、`GET /api/audit-logs`、
+`GET /api/system/metrics`、`GET /api/system/metrics/history?hours=N`（持久化的分钟级
+指标采样，hours 缺省 24、上限 72）、`GET /api/system/config-history`、`GET /api/audit-logs`、
 `GET /api/audit-logs/export?format=csv|json`（下载文件；**导出本身会留痕**
 `audit.export`——把审计日志带走的动作与改配置同等敏感，agent 不要在无人
 确认时批量导出）、`GET /api/alerts`、`GET /api/backups`、`GET /api/cron/jobs`、

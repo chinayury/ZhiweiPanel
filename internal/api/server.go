@@ -114,6 +114,7 @@ func (s *Server) Routes() *http.ServeMux {
 	reg("/api/audit-logs", s.handleAuditLogs)
 	reg("/api/audit-logs/export", s.handleAuditLogsExport)
 	reg("/api/system/metrics", s.handleMetrics)
+	reg("/api/system/metrics/history", s.handleMetricsHistory)
 	reg("/api/system/config-history", s.handleConfigHistory)
 	reg("/api/system/config-history/", s.handleConfigHistoryByID)
 

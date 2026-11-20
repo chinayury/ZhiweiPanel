@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/zhiwei/panel/internal/model"
@@ -22,6 +23,40 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current": s.svc.Metrics(),
 		"history": s.svc.MetricsHistory(),
+	})
+}
+
+// handleMetricsHistory GET /api/system/metrics/history?hours=N
+//
+// 返回持久化的分钟级指标采样（旧 → 新），重启不丢。
+// hours 缺省 24、上限 72（与 service 层的保留期一致——超出保留期的数据
+// 不存在，不如把请求压回有效区间，响应里的 hours 才与实际窗口一致）；
+// 非法数字按缺省处理。这是给仪表盘"近 24 小时"曲线用的读端点，
+// 十秒级实时曲线仍由 /api/system/metrics 的内存 history 提供。
+func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, model.ErrBadRequest)
+		return
+	}
+	const defaultHours, maxHours = 24, 72
+	hours := defaultHours
+	if raw := strings.TrimSpace(r.URL.Query().Get("hours")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			hours = n
+		}
+	}
+	if hours > maxHours {
+		hours = maxHours
+	}
+	samples, err := s.svc.MetricsPersistedHistory(hours)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"hours":        hours,
+		"interval_sec": 60,
+		"history":      samples,
 	})
 }
 
