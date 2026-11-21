@@ -53,12 +53,11 @@ type Service struct {
 	configIssues   []string
 
 	// paths 相关配置
-	dataDir    string
-	certDir    string
-	backupRoot string
+	dataDir string
+	certDir string
 	// backupDirCustom 是 -backup-dir 显式注入的自定义备份根目录。
-	// 空 = 用历史默认 <data>/backup（与 backupRoot 字段无关，后者只用于
-	// 删站时清理遗留的按站点分目录，两套路径互不影响）。
+	// 空 = 用历史默认 <data>/backup；真实备份落盘与孤儿清理都以
+	// BackupRoot()（backup 包）为准，见该方法注释。
 	backupDirCustom string
 	// sslDir 是 dummy 自签证书的存放目录。
 	sslDir string
@@ -87,7 +86,6 @@ func New(db *store.DB, drv driver.Driver, acmeMgr *acme.Manager, eng *alert.Engi
 		mysql:       mysqlClient,
 		dataDir:     dataDir,
 		certDir:     certDir,
-		backupRoot:  filepath.Join(dataDir, "backups"),
 		sslDir:      filepath.Join(dataDir, "ssl"),
 		publicPort:  publicPort,
 		disableIPv6: disableIPv6,
@@ -831,8 +829,11 @@ func (s *Service) DeleteSite(ctx context.Context, id string) error {
 	if err := s.db.DeleteSite(id); err != nil {
 		return err
 	}
-	// 同步清理防篡改基线与备份
-	_ = os.RemoveAll(filepath.Join(s.backupRoot, id))
+	// 已有备份不随删站连坐删除：备份记录与文件独立于站点存活，
+	// 用户可以下载/恢复（站点没了备份还在是备份的本意）。
+	// 无人认领的备份文件由 backup.PruneOrphanFiles（计划任务）按记录裁剪。
+	// （历史遗留：这里曾 RemoveAll 一个按站点分目录的路径——该目录自 v0.1
+	// 起就没有任何写入方，属于死代码，v0.7.1 清理。）
 	// 清理访问认证口令文件：留一份没人知道内容的哈希在盘上没有意义。
 	_ = s.removeAccessFile(id)
 	return s.ApplyAllConfig(ctx)
