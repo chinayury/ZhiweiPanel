@@ -66,10 +66,18 @@ package version
 // v0.1 起就没有任何写入方的按站点分目录），并在注释中写明备份独立于
 // 站点存活的既有语义；README 已知限制 #5 勘误（指标趋势自 v0.7.0 起
 // 已持久化 72 小时，原"重启后曲线从头开始"的表述不再成立）。
+// v0.7.2 = 修复：docker 部署路径下启用 SSL 站点导致 nginx -t 直接 emerg——
+// deploy/nginx.conf（镜像内全局配置）在 http 级声明 shared:SSL:2m，而站点
+// 渲染（buildTLS）声明 shared:SSL:10m，nginx 对同名 shared zone 尺寸冲突
+// 报 "the size ... conflicts with already declared size"，ApplyAllConfig
+// 整体失败、证书签发后无法绑定站点（bindCertToSite 当时还把失败静默吞掉，
+// 现场毫无线索）。全局配置对齐为 10m，新增常驻回归测试锁死两处尺寸一致；
+// 连带把绑定的静默吞错改为记日志。仅影响 docker 部署路径，宿主/systemd
+// 部署不受影响（2026-11-22 于 docker 部署的测试环境实测踩坑并验证修复）。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.7.1"
+const Version = "0.7.2"
 
 // History 已经发布过的历史版本号。
 //
@@ -100,6 +108,7 @@ var History = []string{
 	"0.5.1",
 	"0.6.0",
 	"0.7.0",
+	"0.7.1",
 }
 
 // All 返回当前版本与全部历史版本号。

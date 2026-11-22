@@ -36,6 +36,33 @@
 
 ---
 
+## v0.7.2 — 修复：docker 部署下启用 SSL 站点导致 nginx -t emerg（2026-11-22）
+
+**定位**：缺陷修复。**仅影响 docker 镜像部署路径**（宿主/systemd 部署用发行版
+nginx.conf，无此问题）；无破坏性变更。
+
+### 修复
+
+| 项 | 说明 |
+|----|------|
+| **同名 SSL 会话缓存 zone 尺寸冲突** | `deploy/nginx.conf`（镜像内全局配置）在 http 级声明 `ssl_session_cache shared:SSL:2m`，而站点渲染（`buildTLS`）声明 `shared:SSL:10m`——nginx 要求同名 shared zone 尺寸一致，任一站点启用 SSL 整份配置即 emerg（`the size 10485760 of shared memory zone "SSL" conflicts with already declared size 2097152`），ApplyAllConfig 整体失败。全局配置对齐为 10m；新增常驻回归测试（`internal/nginx/ssl_cache_size_test.go`）锁死两处尺寸一致，任何人改其中一处都会让测试变红 |
+| **证书自动绑定站点失败静默吞错** | `bindCertToSite` 里 `UpdateSite` 失败直接 return、无任何日志——证书 201、站点却没绑上证书，现场毫无线索，只能翻 DB 与启动日志定位。现在至少把失败原因记入面板日志 |
+
+### 触发场景（实测，2026-11-22）
+
+docker 部署上签发证书返回 201，但站点侧 SSL 始终未生效；启动日志：
+
+```
+初始配置下发失败（可稍后在控制台手动重试）: nginx 配置检测失败:
+nginx: [emerg] the size 10485760 of shared memory zone "SSL" conflicts with
+already declared size 2097152 in /etc/nginx/conf.d/10-site-*.conf:74
+```
+
+宿主部署跑同一份代码、同一站点配置不触发（发行版 nginx.conf 没有
+`ssl_session_cache shared:SSL:2m` 这一行）。
+
+---
+
 ## v0.7.1 — 清理：死代码与文档勘误（2026-11-22）
 
 **定位**：内部清理 + 文档勘误。**无行为变更**（删掉的代码路径从未生效过），无破坏性。

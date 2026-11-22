@@ -149,7 +149,12 @@ func (s *Server) bindCertToSite(siteID string, cert *model.Cert) {
 		site.SSL.Protocols = []string{"TLSv1.2", "TLSv1.3"}
 	}
 	if _, err := s.svc.UpdateSite(contextTODO(), siteID, site); err != nil {
-		// 绑定失败不影响证书本身已签发的事实
+		// 绑定失败不影响证书本身已签发的事实；但绝不能静默——
+		// 早期版本这里直接 return，用户拿到 201 却发现站点没绑上证书，
+		// 排查只能翻 DB（2026-11-22 实测踩坑：UpdateSite 的 prevalidateSite
+		// 因 docker 全局 nginx.conf 与站点渲染的 shared:SSL 尺寸冲突而失败，
+		// 现场毫无线索）。至少把失败原因记进日志。
+		log.Printf("[api] 证书 %s 自动绑定站点 %s 失败: %v", cert.ID, siteID, err)
 		return
 	}
 }
