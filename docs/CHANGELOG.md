@@ -36,6 +36,35 @@
 
 ---
 
+## v0.7.3 — 修复：裸机安装漏掉发行版默认站点移除（2026-11-24）
+
+**定位**：缺陷修复。**仅影响 Debian/Ubuntu 与 RPM 系的裸机安装路径**（docker 镜像路径不受影响——镜像构建期一直在删）；
+对已装机用户的影响是「配置下发永远不生效」，无数据面破坏。
+
+### 修复
+
+| 项 | 说明 |
+|----|------|
+| **install.sh 移除发行版默认站点** | Debian/Ubuntu 的 `/etc/nginx/sites-enabled/default` 与 RPM 系的 `/etc/nginx/conf.d/default.conf` 都在 `:80` 声明 `default_server`，与面板下发的 catch-all 默认站（`01-zhiweipanel-default-server.conf`）冲突，`nginx -t` 报 `a duplicate default server for 0.0.0.0:80` → ApplyAllConfig 永远失败。**该冲突在安装期自检发现不了**（安装时面板还没渲染配置，`nginx -t` 是过的），必须主动移除。install.sh 新增「备份 → 移除 → `nginx -t` 验证 → 失败整体回滚」处理，与镜像构建期删除 alpine `http.d/default.conf` 同一策略（2026-11-23 裸机实测踩坑）。备份落在 `/etc/nginx/zw-removed-vhosts/`——**不能留在原目录**，`include sites-enabled/*` 不带扩展名过滤，备份文件会被一起 include、冲突照旧（本版本实测踩坑后修正） |
+
+### 现场症状与已装机修复
+
+升级本版本对**已装机**用户不自动生效（install.sh 只在安装时跑）。已中招的机器（配置下发持续告警、建站/删站接口 500 或带 warning）手动修：
+
+```bash
+cp -a /etc/nginx/sites-enabled/default /root/   # 或 conf.d/default.conf
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart zhiweipanel
+```
+
+### 兼容性说明
+
+- 备份文件在 `/etc/nginx/zw-removed-vhosts/<路径扁平化>`（解引用后的普通文件），恢复即 `cp -a` 回原路径；
+- 无默认站点的机器（已删过/自定义过）跳过，幂等可重跑；
+- 不影响 docker 部署路径与既有站点的 80/443 监听语义。
+
+---
+
 ## v0.7.2 — 修复：docker 部署下启用 SSL 站点导致 nginx -t emerg（2026-11-22）
 
 **定位**：缺陷修复。**仅影响 docker 镜像部署路径**（宿主/systemd 部署用发行版

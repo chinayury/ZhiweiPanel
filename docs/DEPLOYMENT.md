@@ -71,12 +71,13 @@ bash deploy/install.sh
 
 1. 环境检查（必须 Linux、必须 root、识别 apt/dnf/yum）；
 2. 安装 nginx（缺失时）、PHP-FPM（`INSTALL_PHP=1`）、MariaDB（`INSTALL_MYSQL=1`），并 `systemctl enable --now` 拉起；
-3. 创建目录结构：`data/certs`、`data/backups`、`data/logs`、`nginx/conf.d`；
-4. **幂等地**向 `/etc/nginx/nginx.conf` 的 `http { }` 块内注入 `include <INSTALL_DIR>/nginx/conf.d/*.conf;`——注入前备份为 `nginx.conf.zw-backup`，注入后跑 `nginx -t`，不通过就自动回滚并退出；
-5. 下载二进制到 `$INSTALL_DIR/zhiweipanel` 并 `chmod +x`；
-6. 写 `/etc/systemd/system/zhiweipanel.service`（含 `-admin` / `-admin-pass`），`daemon-reload` + `enable` + `restart`；
-7. 放行防火墙（firewalld 或 ufw，二者都装了才处理）；
-8. 打印安装结果与常用命令。
+3. **移除发行版默认站点**（`/etc/nginx/sites-enabled/default`、`/etc/nginx/conf.d/default.conf`）：二者都在 `:80` 声明 `default_server`，与面板下发的 catch-all 默认站冲突（`nginx -t` 报 `a duplicate default server`，配置下发永远不生效——且安装期自检发现不了，冲突要等面板首次渲染才爆发）。先备份到 `/etc/nginx/zw-removed-vhosts/`（**不能留在原目录**：`include sites-enabled/*` 不带扩展名过滤，备份文件会被一起 include，冲突照旧）再移除，移除后跑 `nginx -t`，不通过就整体回滚并退出；无默认站点则跳过（幂等）；
+4. 创建目录结构：`data/certs`、`data/backups`、`data/logs`、`nginx/conf.d`；
+5. **幂等地**向 `/etc/nginx/nginx.conf` 的 `http { }` 块内注入 `include <INSTALL_DIR>/nginx/conf.d/*.conf;`——注入前备份为 `nginx.conf.zw-backup`，注入后跑 `nginx -t`，不通过就自动回滚并退出；
+6. 下载二进制到 `$INSTALL_DIR/zhiweipanel` 并 `chmod +x`；
+7. 写 `/etc/systemd/system/zhiweipanel.service`（含 `-admin` / `-admin-pass`），`daemon-reload` + `enable` + `restart`；
+8. 放行防火墙（firewalld 或 ufw，二者都装了才处理）；
+9. 打印安装结果与常用命令。
 
 > **安全提醒**：`install.sh` 把 `-admin-pass` 明文写进了 systemd unit 文件。装完请立刻 `chmod 600 /etc/systemd/system/zhiweipanel.service`，并到面板里改掉初始密码（设置 → 修改密码）。改完可以把 unit 里的 `-admin-pass` 行删掉再 `systemctl daemon-reload`——该参数只在首次创建账户时生效，删掉不影响已存在的账户。
 

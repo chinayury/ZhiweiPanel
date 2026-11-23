@@ -74,10 +74,17 @@ package version
 // 现场毫无线索）。全局配置对齐为 10m，新增常驻回归测试锁死两处尺寸一致；
 // 连带把绑定的静默吞错改为记日志。仅影响 docker 部署路径，宿主/systemd
 // 部署不受影响（2026-11-22 于 docker 部署的测试环境实测踩坑并验证修复）。
+// v0.7.3 = 修复：裸机安装（install.sh）漏掉发行版默认站点的移除——
+// Debian/Ubuntu 的 /etc/nginx/sites-enabled/default 与 RPM 系的
+// /etc/nginx/conf.d/default.conf 都在 :80 声明 default_server，与面板下发的
+// catch-all 默认站冲突，nginx -t 报 "a duplicate default server"，
+// 配置下发永远不生效（且安装期自检是过的——冲突要等面板首次渲染才爆发）。
+// install.sh 增加「备份→移除→nginx -t 验证→失败回滚」处理（与镜像构建期
+// 删除 alpine http.d/default.conf 同一策略）；2026-11-23 裸机实测踩坑。
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.7.2"
+const Version = "0.7.3"
 
 // History 已经发布过的历史版本号。
 //
@@ -109,6 +116,7 @@ var History = []string{
 	"0.6.0",
 	"0.7.0",
 	"0.7.1",
+	"0.7.2",
 }
 
 // All 返回当前版本与全部历史版本号。

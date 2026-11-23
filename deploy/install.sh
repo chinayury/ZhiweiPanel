@@ -17,7 +17,7 @@
 #   MYSQL_ROOT_PASS MariaDB root 密码；留空则生成 24 位随机串并写入
 #                   ${INSTALL_DIR}/data/mysql-root.cnf（权限 0600）
 #   BIN_URL         二进制下载地址（必填，例：
-#                   BIN_URL=https://example.com/zhiweipanel-0.7.2-linux-amd64）
+#                   BIN_URL=https://example.com/zhiweipanel-0.7.3-linux-amd64）
 
 set -euo pipefail
 
@@ -86,6 +86,59 @@ else
 fi
 
 NGINX_BIN="$(command -v nginx)"
+
+# ---------- 1.7 移除发行版默认站点 ----------
+# Debian/Ubuntu 的 nginx 包自带 /etc/nginx/sites-enabled/default，
+# RPM 系（EPEL/官方源）自带 /etc/nginx/conf.d/default.conf——两者都在
+# :80 上声明 default_server，与面板下发的 catch-all 默认站
+# （01-zhiweipanel-default-server.conf，同样 default_server）冲突：
+#   nginx: [emerg] a duplicate default server for 0.0.0.0:80
+# nginx -t 失败 ⇒ 面板配置下发永远不生效（站点建得起来、删得掉，
+# 但 rendered 配置从未上线；且安装期 nginx -t 是过的——冲突要等面板
+# 首次渲染才爆发，所以不处理根本发现不了）。
+# 仓库 Dockerfile 在构建期删除 alpine 的 http.d/default.conf（见
+# docs/DEPLOYMENT.md），这里做裸机的对应处理：先备份再移除，
+# 移除后 nginx -t 不过则整体回滚（与下面 nginx.conf 注入同策略）。
+#
+# 备份目录的坑（实测踩过）：**不能**把备份留在原目录——nginx 主配置里
+# `include sites-enabled/*` 不带扩展名过滤，`default.zw-removed` 会被原样
+# include，冲突照旧。统一放到 /etc/nginx/zw-removed-vhosts/（sites-enabled/*
+# 与 conf.d/*.conf 两个 glob 都够不到）。
+VHOST_BACKUP_DIR="/etc/nginx/zw-removed-vhosts"
+DISTRO_DEFAULT_VHOSTS="/etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf"
+vhost_backup_path() { echo "$VHOST_BACKUP_DIR/$(echo "$1" | sed 's#^/##; s#/#-#g')"; }
+
+REMOVED_VHOST=0
+for vh in $DISTRO_DEFAULT_VHOSTS; do
+    if [ -e "$vh" ] || [ -L "$vh" ]; then
+        bak="$(vhost_backup_path "$vh")"
+        mkdir -p "$VHOST_BACKUP_DIR"
+        # cp -aL 解引用成自包含普通文件：sites-enabled/default 多是指向
+        # ../sites-available/default 的软链，相对目标换到备份目录未必解析。
+        # 已备份过（重复执行）则不覆盖。
+        if [ ! -e "$bak" ]; then
+            cp -aL "$vh" "$bak" 2>/dev/null || true
+        fi
+        rm -f "$vh"
+        REMOVED_VHOST=1
+        info "已移除发行版默认站点 $vh（备份 $bak，恢复：cp -a $bak $vh）"
+    fi
+done
+if [[ "$REMOVED_VHOST" == "1" ]]; then
+    if ! nginx -t 2>/dev/null; then
+        error "移除默认站点后配置检测失败，自动回滚"
+        for vh in $DISTRO_DEFAULT_VHOSTS; do
+            bak="$(vhost_backup_path "$vh")"
+            if [ -e "$bak" ]; then
+                cp -a "$bak" "$vh"
+            fi
+        done
+        exit 1
+    fi
+    info "发行版默认站点已移除，nginx 配置检测通过"
+else
+    info "无发行版默认站点需要移除"
+fi
 
 # ---------- 1.5 安装 PHP-FPM ----------
 if [[ "$INSTALL_PHP" == "1" ]]; then
@@ -247,7 +300,7 @@ BIN_URL="${BIN_URL:-}"
 
 if [[ -z "$BIN_URL" ]]; then
     error "请通过环境变量指定二进制下载地址，例如："
-    echo "    BIN_URL=https://example.com/zhiweipanel-0.7.2-linux-amd64 bash $0"
+    echo "    BIN_URL=https://example.com/zhiweipanel-0.7.3-linux-amd64 bash $0"
     exit 1
 fi
 
