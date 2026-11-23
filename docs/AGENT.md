@@ -69,7 +69,7 @@ curl -X POST https://<panel-host>:8888/api/tokens \
 `GET /api/audit-logs/export?format=csv|json`（下载文件；**导出本身会留痕**
 `audit.export`——把审计日志带走的动作与改配置同等敏感，agent 不要在无人
 确认时批量导出）、`GET /api/alerts`、`GET /api/backups`、`GET /api/cron/jobs`、
-`GET /api/2fa/status`（两步验证状态）、`GET /api/auth/me`（恒 200，用
+`GET /api/2fa/status`（两步验证状态 + `recovery_remaining` 恢复码余量）、`GET /api/auth/me`（恒 200，用
 `authenticated` 字段区分登录态——**4xx 才是错误**）。
 
 ## 5. 必须知道的运行时约定（踩过坑的）

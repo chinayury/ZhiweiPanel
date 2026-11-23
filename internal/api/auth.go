@@ -472,8 +472,32 @@ func (s *Server) handleVerifyTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !twofa.Validate(secret, body.Code, time.Now()) {
-		limiter.fail(key)
-		writeError(w, http.StatusUnauthorized, errors.New("动态口令错误"))
+		// v0.8.0: 动态口令不对时，再试恢复码——手机丢失/损坏时用户唯一的
+		// 自救通道。恢复码同样受 pending 尝试上限与限流器约束（错误路径
+		// 统一 fail），不存在"恢复码是绕过速率限制的后门"。
+		used, rerr := s.svc.DB().UseRecoveryCode(p.username, body.Code)
+		if rerr != nil {
+			writeError(w, http.StatusInternalServerError, errInternal)
+			return
+		}
+		if !used {
+			limiter.fail(key)
+			writeError(w, http.StatusUnauthorized, errors.New("动态口令或恢复码错误"))
+			return
+		}
+		limiter.success(key)
+		s.consumeTOTPPending(body.LoginToken)
+
+		ip := s.clientIP(r)
+		ua := r.UserAgent()
+		if err := s.svc.DB().UpdateLastLogin(p.username, ip, ua); err != nil {
+			log.Printf("[auth] update last_login failed: %v", err)
+		}
+		_, role, _ := s.svc.DB().GetUser(p.username)
+		s.issueSession(w, r, p.username, role)
+		s.handleAuditLogin(r, p.username, "auth.login", "登录成功（恢复码）", http.StatusOK)
+		log.Printf("[auth] recovery-code login for %s from %s", p.username, ip)
+		writeJSON(w, http.StatusOK, loginResponse{OK: true, Username: p.username, Role: role})
 		return
 	}
 	limiter.success(key)

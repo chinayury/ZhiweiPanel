@@ -81,6 +81,7 @@ func (s *Server) Routes() *http.ServeMux {
 	reg("/api/2fa/enable", s.handle2FAEnable)
 	reg("/api/2fa/disable", s.handle2FADisable)
 	reg("/api/2fa/status", s.handle2FAStatus)
+	reg("/api/2fa/recovery-codes", s.handle2FARegenerateRecovery)
 	reg("/api/sites", s.handleSites)
 	reg("/api/sites/", s.handleSiteByID)
 	reg("/api/certs", s.handleCerts)

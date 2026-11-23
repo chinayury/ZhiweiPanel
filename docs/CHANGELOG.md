@@ -36,6 +36,36 @@
 
 ---
 
+## v0.8.0 — 新增：两步验证恢复码（2026-11-25）
+
+**定位**：新增用户可见功能（登录安全）。默认不影响未开启 2FA 的用户；已开启 2FA 的用户启用即获得恢复码。无破坏性变更。
+
+### 新增
+
+| 项 | 说明 |
+|----|------|
+| **恢复码发放** | 开启两步验证成功时自动发放 10 枚恢复码（12 位 Crockford base32，展示为 `XXXX-XXXX-XXXX`；库里只存 SHA-256 摘要，明文只在响应里出现一次）。设置页弹窗强制勾选"我已保存"才能关闭 |
+| **恢复码登录** | 登录第二步（原动态口令输入框）现在也接受恢复码——手机丢失/损坏时用户**唯一**的自救通道（此前只能走忘记密码邮件流程，邮箱一起丢就彻底锁死）。每枚一次性，用后即焚 |
+| **重新生成** | `POST /api/2fa/recovery-codes` 整体替换：旧码立即全部作废（怀疑泄漏时的止损手段），新码同样明文只显示一次 |
+| **余量展示** | `GET /api/2fa/status` 新增 `recovery_remaining` 字段；设置页显示"剩余 N 枚未使用" |
+| **联动清理** | 关闭两步验证时恢复码一并清空（密钥都没了，恢复码失去存在意义） |
+
+### 实现
+
+- 生成：`internal/twofa/recovery.go`（Crockford 字母表剔除 I/L/O/U，抄录不混淆；crypto/rand 12 字符 ≈ 60 bit 熵）。
+- 存储：新表 `totp_recovery_codes`（`CREATE TABLE IF NOT EXISTS` 兼容旧库；一行一枚，`used_at` 非空即消费——一次性由行状态天然保证）；方法 `ReplaceRecoveryCodes`（事务内先删后插）/ `UseRecoveryCode`（条件 UPDATE，命中才 `RowsAffected=1`）/ `CountUnusedRecoveryCodes` / `DeleteRecoveryCodes`。**归一化放在哈希边界**（转大写、去短横空格），用户纸上抄回来的变体照样命中。
+- 哈希用 SHA-256 而非 bcrypt：恢复码是高熵随机串，字典攻击不可行，无需慢哈希（bcrypt 是给 6 位低熵验证码准备的，见 `login_challenges`）。
+- 登录兜底在 `handleVerifyTOTP` 内：动态口令校验失败 → 试恢复码 → 命中即消费 + 发会话 + 审计「登录成功（恢复码）」；两条路径都受 pending 尝试上限（5 次）与 IP+用户名限流器约束，恢复码不是绕过速率限制的后门。
+- 前端：登录页提示改为"动态口令或恢复码"（输入框 maxlength 6→16）；设置页恢复码区（余量 + 重新生成 + 勾选确认的保存弹窗）。
+- 测试：`internal/twofa/recovery_test.go`（形态/字母表/唯一性）、`internal/store/totp_recovery_test.go`（生命周期/一次性/归一化/多用户隔离）、`internal/api/recovery_test.go`（启用即发码、恢复码登录、一次性、重发作废、关闭清码、API Token 403）。
+
+### 兼容性说明
+
+- 旧库启动自动建表；未开启 2FA 的用户零感知（登录流程不变）。
+- `GET /api/2fa/status` 响应**新增** `recovery_remaining` 字段（旧消费方忽略即可）。
+
+---
+
 ## v0.7.3 — 修复：裸机安装漏掉发行版默认站点移除（2026-11-24）
 
 **定位**：缺陷修复。**仅影响 Debian/Ubuntu 与 RPM 系的裸机安装路径**（docker 镜像路径不受影响——镜像构建期一直在删）；

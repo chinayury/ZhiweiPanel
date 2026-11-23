@@ -255,7 +255,8 @@ function renderLogin() {
 
   const uInput = textInput('', null, { placeholder: '用户名' });
   const pInput = textInput('', null, { type: 'password', placeholder: '密码' });
-  const cInput = textInput('', null, { type: 'text', placeholder: '6 位验证码', maxlength: 6 });
+  // maxlength 16：验证码 6 位、动态口令 6 位、恢复码 12 位+2 短横共用此框。
+  const cInput = textInput('', null, { type: 'text', placeholder: '6 位验证码', maxlength: 16 });
   const npInput = textInput('', null, { type: 'password', placeholder: '新密码（至少 8 位）' });
 
   const submitBtn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, '登 录');
@@ -358,7 +359,7 @@ async function doLogin(state, uInput, pInput, cInput, errBox, hintBox, submitBtn
       form.querySelector('#loginRowP').style.display = 'none';
       form.querySelector('#loginRowC').style.display = '';
       submitBtn.textContent = '验 证';
-      hintBox.textContent = '请输入认证器 App 中的 6 位动态口令';
+      hintBox.textContent = '请输入认证器 App 中的 6 位动态口令；手机不在身边时可输入恢复码';
       hintBox.style.display = 'block';
       document.querySelector('.login-back-link').style.display = '';
       setTimeout(() => cInput.focus(), 30);

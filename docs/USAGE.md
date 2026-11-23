@@ -53,14 +53,22 @@
 
 **关闭**：需要输入当前有效口令确认——能出示动态口令的人才有资格降级防护。
 
+**恢复码**（启用后自动发放）：
+
+- 开启成功时面板发放 **10 枚一次性恢复码**，弹窗展示（只此一次，需勾选"我已保存"才能关闭）——请立即抄录或复制到安全的地方；
+- 登录第二步的输入框**同时接受动态口令和恢复码**（手机丢失/损坏时输入恢复码即可登录），每枚仅能用一次；
+- 设置页显示"剩余 N 枚未使用"；`重新生成恢复码`会使旧码**全部立即作废**并发放新 10 枚（怀疑泄漏时的止损手段）；
+- 关闭两步验证时恢复码一并清空；
+- 恢复码为 12 位（形如 `XXXX-XXXX-XXXX`），抄录时大小写、短横、空格不敏感；接口：`POST /api/2fa/recovery-codes`（重新生成）、`GET /api/2fa/status`（含 `recovery_remaining` 余量）。
+
 行为细节：
 
 - 动态口令 30 秒一换，±30 秒时钟漂移内可通过（认证器与服务器时间差 1 分钟以内即可）；
-- 登录第二阶段的动态口令：2 分钟有效期、一次性、累计 5 次错误即作废，需重新输入密码；
+- 登录第二阶段的动态口令：2 分钟有效期、一次性、累计 5 次错误即作废，需重新输入密码；恢复码登录同样受该上限与限流器约束；
 - 已启用 2FA 时**跳过 1.2 的异常登录邮件验证**（动态口令是更强的第二因子）；
-- 2FA 管理端点（setup / enable / disable / status）**只允许浏览器会话**，API Token 一律 403；
-- 接口：`POST /api/2fa/setup` / `enable` / `disable`、`GET /api/2fa/status`；
-- 密钥存于 SQLite（users 表 totp_secret / totp_enabled），无法从界面找回——启用时请妥善保存展示的密钥。
+- 2FA 管理端点（setup / enable / disable / recovery-codes / status）**只允许浏览器会话**，API Token 一律 403；
+- 接口：`POST /api/2fa/setup` / `enable` / `disable` / `recovery-codes`、`GET /api/2fa/status`；
+- 密钥存于 SQLite（users 表 totp_secret / totp_enabled），无法从界面找回——启用时请妥善保存展示的密钥；恢复码只存 SHA-256 摘要（totp_recovery_codes 表）。
 
 ### 1.5 修改密码
 

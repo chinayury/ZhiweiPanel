@@ -140,10 +140,14 @@ export const api = {
     totpVerify: (login_token, code) =>
       http.post('/auth/verify-totp', { login_token: login_token, code: code }),
     // 两步验证管理（浏览器会话专用，API Token 403）。
+    // status2FA 返回 {enabled, recovery_remaining}（v0.8.0 起带恢复码余量）。
     status2FA: () => http.get('/2fa/status'),
     setup2FA: () => http.post('/2fa/setup', {}),
+    // enable2FA 成功响应带 recovery_codes（明文仅此一次，前端弹窗让用户保存）。
     enable2FA: (code) => http.post('/2fa/enable', { code: code }),
     disable2FA: (code) => http.post('/2fa/disable', { code: code }),
+    // v0.8.0: 重新生成恢复码（整体替换，旧码立即作废），返回 recovery_codes 明文。
+    recovery2FA: () => http.post('/2fa/recovery-codes', {}),
     // 忘记密码：两步流程（申请验证码 → 提交验证码 + 新密码）。
     //
     // 这两个端点挂在主 mux 上（未登录也可访问），但仍然走 request() 封装，

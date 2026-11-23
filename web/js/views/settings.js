@@ -3,6 +3,7 @@ import { api, formatBytes, formatDateTime } from '../api.js';
 import {
   h, clear, icon, button, tag, field, textInput, numberInput, selectInput,
   loading, errorState, toast, modal, codeBox, sectionTitle, grid, progressBar,
+  checkboxField,
 } from '../components.js';
 import { store } from '../app.js';
 
@@ -227,9 +228,11 @@ export async function render(container) {
   async function draw2FA() {
     clear(twofaBox);
     let enabled = false;
+    let recoveryRemaining = 0;
     try {
       const st = await api.auth.status2FA();
       enabled = !!st.enabled;
+      recoveryRemaining = Number(st.recovery_remaining) || 0;
     } catch (e) {
       clear(twofaBox).appendChild(errorState(e.message || '加载失败', () => draw2FA()));
       return;
@@ -238,7 +241,7 @@ export async function render(container) {
       h('div', { class: 'runtime-brief' }, [
         enabled ? tag('已启用', 'success') : tag('未启用', 'warning'),
         h('span', { class: 'field-hint' }, enabled
-          ? '登录时除密码外还需输入认证器 App 的 6 位动态口令。'
+          ? '登录时除密码外还需输入认证器 App 的 6 位动态口令；手机不在身边时也可输入恢复码。'
           : '开启后，登录除密码外还需输入认证器 App（Google Authenticator 等）的 6 位动态口令。'),
       ]),
       h('div', { class: 'inline-actions' }, [
@@ -246,7 +249,15 @@ export async function render(container) {
           ? button('关闭两步验证', show2FADisable, 'danger', 'lock')
           : button('开启两步验证', show2FASetup, 'primary', 'key'),
       ]),
-    ]));
+      // v0.8.0: 恢复码区——启用后才出现。手机丢失/损坏时的自救通道。
+      enabled
+        ? h('div', { class: 'runtime-brief' }, [
+            h('span', {}, `恢复码：剩余 ${recoveryRemaining} 枚未使用`),
+            h('span', { class: 'field-hint' }, '登录界面输入恢复码即可替代动态口令，每枚仅能用一次。'),
+            button('重新生成恢复码', showRecoveryRegenerate, 'default', 'refresh'),
+          ])
+        : null,
+    ].filter(Boolean)));
   }
 
   // 开启流程：setup 拿密钥 → 用户扫码/录入 → 提交首码 → enable。
@@ -280,15 +291,78 @@ export async function render(container) {
         button('确认启用', async () => {
           errBox.style.display = 'none';
           try {
-            await api.auth.enable2FA(codeInput.value.trim());
-            toast('两步验证已启用，下次登录需要输入动态口令', 'success');
+            const res = await api.auth.enable2FA(codeInput.value.trim());
             m.close();
             await draw2FA();
+            // v0.8.0: 启用成功即发放恢复码——明文只在本次响应里，
+            // 必须当场让用户抄录保存（之后只能重新生成）。
+            if (res && Array.isArray(res.recovery_codes) && res.recovery_codes.length) {
+              showRecoveryCodes(res.recovery_codes, false);
+            } else {
+              toast('两步验证已启用，下次登录需要输入动态口令', 'success');
+            }
           } catch (e) {
             errBox.textContent = e.message || '启用失败';
             errBox.style.display = 'block';
           }
         }, 'primary'),
+      ],
+    });
+  }
+
+  // 展示只出现一次的恢复码明文（启用后 / 重新生成后共用）。
+  // regenerated=true 时强调旧码已全部作废。
+  function showRecoveryCodes(codes, regenerated) {
+    let acked = false;
+    const ack = checkboxField('我已将恢复码抄录/复制到安全的地方保存', false, (v) => { acked = v; });
+    const m = modal({
+      title: regenerated ? '恢复码已重新生成' : '保存恢复码',
+      width: '520px',
+      content: h('div', {}, [
+        h('div', { class: 'field-hint' }, regenerated
+          ? '旧恢复码已全部作废。下面是新的 10 枚恢复码：'
+          : '手机丢失或损坏时，登录界面可输入恢复码替代动态口令。每枚仅能用一次，请立即保存：'),
+        codeBox(codes.join('\n'), { maxHeight: '200px' }),
+        h('div', { class: 'field-hint' }, '恢复码只显示这一次，关闭本窗后无法再次查看（可随时重新生成，但旧码会作废）。'),
+        ack,
+      ]),
+      footer: [
+        button('关闭', () => m.close(), 'default'),
+        button('我已保存', () => {
+          if (!acked) {
+            toast('请先勾选确认已保存', 'warning');
+            return;
+          }
+          m.close();
+        }, 'primary'),
+      ],
+    });
+  }
+
+  // 重新生成恢复码：POST 是整体替换语义，旧码立即作废——先确认再执行。
+  async function showRecoveryRegenerate() {
+    const m = modal({
+      title: '重新生成恢复码',
+      width: '460px',
+      content: h('div', {}, [
+        h('div', { class: 'field-hint' }, '重新生成会使旧的 10 枚恢复码全部立即作废。确认继续？'),
+      ]),
+      footer: [
+        button('取消', () => m.close(), 'default'),
+        button('确认重新生成', async () => {
+          m.close();
+          try {
+            const res = await api.auth.recovery2FA();
+            if (res && Array.isArray(res.recovery_codes) && res.recovery_codes.length) {
+              showRecoveryCodes(res.recovery_codes, true);
+              await draw2FA();
+            } else {
+              toast('重新生成失败：响应异常', 'error');
+            }
+          } catch (e) {
+            toast(e.message || '重新生成失败', 'error');
+          }
+        }, 'danger'),
       ],
     });
   }

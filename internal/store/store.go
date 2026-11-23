@@ -249,6 +249,19 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
 
+-- v0.8.0: 两步验证恢复码。手机丢失/损坏时用户唯一能自救登录的通道。
+-- code_hash 用 SHA-256（不是 bcrypt）：恢复码是 12 位 base32 的高熵随机串
+-- （约 60 bit），字典攻击不可行，无需慢哈希；bcrypt 那样的是给 6 位低熵
+-- 验证码（login_challenges）准备的。used_at 非空即已消费（一次性）。
+CREATE TABLE IF NOT EXISTS totp_recovery_codes (
+    id         TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    code_hash  TEXT NOT NULL,
+    used_at    TIMESTAMP,
+    created_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON totp_recovery_codes(username, used_at);
+
 -- v0.7.0: 宿主机指标持久化（分钟粒度趋势）。
 -- 内存环形缓冲只保留最近约 20 分钟的十秒级细节，重启即丢；
 -- 本表由后台采集器每分钟落一条降采样数据，让"近 24 小时"曲线跨重启存在。
