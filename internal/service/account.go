@@ -227,6 +227,45 @@ func renderChallengeMail(purpose, code string) (subject, body string) {
 
 func codeExpiryMinutes() int { return int(challengeTTL / time.Minute) }
 
+// ---------- 恢复码登录提醒（v0.8.1） ----------
+
+// NotifyRecoveryLogin 恢复码登录成功后给账户邮箱发提醒。
+//
+// 语义：恢复码登录 = 用户大概率丢了手机（或恢复码纸被翻出来）。
+// 这是一个**安全相关事件**，本人必须第一时间知道——否则捡到手机的人
+// 可以拿着恢复码静默登录。提醒内容带时间/IP/UA，并提示如非本人操作
+// 立即去面板重新生成恢复码/修改密码。
+//
+// 设计约束（best-effort，绝不反过来伤害主流程）：
+//   - 邮箱未绑定 / SMTP 未配置 → 只记日志，静默跳过（登录已成功，
+//     不能因为通知发不出去把用户踢回去）；
+//   - 由调用方放 goroutine 调用——SMTP 发送可能耗时数秒，
+//     不能拖慢登录响应；
+//   - SendSensitiveSafe 内部已容错（失败只记日志不 panic）。
+func (s *Service) NotifyRecoveryLogin(username, ip, ua string) {
+	prof, err := s.db.GetUserProfile(username)
+	if err != nil || prof.Email == "" {
+		return
+	}
+	if s.mailer == nil || !s.mailer.IsConfigured() {
+		log.Printf("[2fa] 恢复码登录提醒未发送（%s 未绑邮箱或 SMTP 未配置）", username)
+		return
+	}
+	subject, body := renderRecoveryLoginMail(ip, ua)
+	s.mailer.SendSensitiveSafe(prof.Email, subject, body)
+}
+
+// renderRecoveryLoginMail 渲染恢复码登录提醒邮件。
+func renderRecoveryLoginMail(ip, ua string) (subject, body string) {
+	subject = "[智维面板] 安全提醒：恢复码被用于登录"
+	body = fmt.Sprintf("您的智维面板管理员账户刚刚通过「恢复码」完成了登录。\n\n"+
+		"时间：%s\n来源 IP：%s\n浏览器/客户端：%s\n\n"+
+		"恢复码是手机丢失或损坏时的备用登录凭证。如果这是您本人操作，忽略本邮件即可；"+
+		"如果不是，请立即登录面板「重新生成恢复码」并修改管理员密码。",
+		time.Now().Format("2006-01-02 15:04:05"), ip, ua)
+	return subject, body
+}
+
 // genCode6 生成 6 位数字验证码（000000-999999）。
 // 用 crypto/rand 而不是 math/rand：避免被时间侧信道预测。
 func genCode6() (string, error) {

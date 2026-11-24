@@ -497,6 +497,10 @@ func (s *Server) handleVerifyTOTP(w http.ResponseWriter, r *http.Request) {
 		s.issueSession(w, r, p.username, role)
 		s.handleAuditLogin(r, p.username, "auth.login", "登录成功（恢复码）", http.StatusOK)
 		log.Printf("[auth] recovery-code login for %s from %s", p.username, ip)
+		// v0.8.1: 恢复码登录 = 用户大概率丢了手机——邮件告知本人（best-effort，
+		// 放 goroutine：SMTP 可能耗时数秒，不能拖慢登录响应；内部已容错，
+		// 邮箱/SMTP 缺失只记日志，绝不影响已成功的登录）。
+		go s.svc.NotifyRecoveryLogin(p.username, ip, ua)
 		writeJSON(w, http.StatusOK, loginResponse{OK: true, Username: p.username, Role: role})
 		return
 	}
