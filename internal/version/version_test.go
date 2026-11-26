@@ -134,59 +134,20 @@ func TestVersionAnchorsAllAligned(t *testing.T) {
 		}
 	})
 
-	t.Run("Dockerfile 的 ARG VERSION", func(t *testing.T) {
-		b, err := os.ReadFile(filepath.Join(root, "deploy", "Dockerfile"))
-		if err != nil {
-			t.Fatalf("读取 Dockerfile 失败: %v", err)
-		}
-		got := extractArg(t, string(b), "ARG VERSION=")
-		if got != want {
-			t.Errorf("Dockerfile 的 ARG VERSION=%s，与权威源 %s 不一致", got, want)
-		}
-	})
-
-	t.Run("docker-compose 的 VERSION 默认值", func(t *testing.T) {
-		b, err := os.ReadFile(filepath.Join(root, "deploy", "docker-compose.yml"))
-		if err != nil {
-			t.Fatalf("读取 docker-compose.yml 失败: %v", err)
-		}
-		got := extractAll(t, string(b), "${VERSION:-")
-		if len(got) == 0 {
-			t.Fatal("docker-compose.yml 里没找到 ${VERSION:-...} 占位")
-		}
-		for _, g := range got {
-			if g != want {
-				t.Errorf("docker-compose.yml 的 ${VERSION:-%s} 与权威源 %s 不一致", g, want)
+	for _, name := range []string{"deploy/Dockerfile", "deploy/docker-compose.yml", "deploy/install.sh", "README.md"} {
+		t.Run(name, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join(root, name))
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
-
-	t.Run("install.sh 的下载示例", func(t *testing.T) {
-		b, err := os.ReadFile(filepath.Join(root, "deploy", "install.sh"))
-		if err != nil {
-			t.Fatalf("读取 install.sh 失败: %v", err)
-		}
-		// 只认 "zhiweipanel-<版本>-linux-amd64" 这种下载文件名形态，
-		// 免得把 "zhiweipanel-install.sh" 这种脚本名也当成版本号。
-		re := regexp.MustCompile(`zhiweipanel-(\d+\.\d+\.\d+)-linux-amd64`)
-		m := re.FindStringSubmatch(string(b))
-		if m == nil {
-			t.Fatal("install.sh 里没找到 zhiweipanel-<版本>-linux-amd64 示例")
-		}
-		if m[1] != want {
-			t.Errorf("install.sh 示例里的版本 %s 与权威源 %s 不一致", m[1], want)
-		}
-	})
-
-	t.Run("README 标注版本", func(t *testing.T) {
-		b, err := os.ReadFile(filepath.Join(root, "README.md"))
-		if err != nil {
-			t.Fatalf("读取 README.md 失败: %v", err)
-		}
-		if !strings.Contains(string(b), "v"+want) {
-			t.Errorf("README.md 里找不到当前版本 v%s", want)
-		}
-	})
+			if got := scanAnchoredVersions(string(b)); len(got) != 0 {
+				t.Errorf("文件写死了面板发行版本 %v", got)
+			}
+			if name == "README.md" && regexp.MustCompile(`(?m)^\*\*[^\n]*\bv\d+\.\d+\.\d+`).Match(b) {
+				t.Error("README 标题不应标注固定版本")
+			}
+		})
+	}
 
 	t.Run("CHANGELOG 有当前版本段", func(t *testing.T) {
 		b, err := os.ReadFile(filepath.Join(root, "docs", "CHANGELOG.md"))
@@ -320,56 +281,4 @@ func TestIsKnown(t *testing.T) {
 			t.Errorf("历史版本 %s 应当是已知版本", h)
 		}
 	}
-}
-
-// extractArg 取 "ARG KEY=" 后面紧跟的值。
-func extractArg(t *testing.T, text, prefix string) string {
-	t.Helper()
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	t.Fatalf("没找到 %s", prefix)
-	return ""
-}
-
-// extractAll 取所有 prefix 紧跟的值。
-func extractAll(t *testing.T, text, prefix string) []string {
-	t.Helper()
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		idx := 0
-		for {
-			i := strings.Index(line[idx:], prefix)
-			if i < 0 {
-				break
-			}
-			i += idx
-			rest := line[i+len(prefix):]
-			end := strings.Index(rest, "}")
-			if end < 0 {
-				break
-			}
-			out = append(out, rest[:end])
-			idx = i + len(prefix) + end
-		}
-	}
-	return out
-}
-
-// extractBetween 取 prefix 与 suffix 之间的内容（取第一个）。
-func extractBetween(t *testing.T, text, prefix, suffix string) string {
-	t.Helper()
-	i := strings.Index(text, prefix)
-	if i < 0 {
-		return ""
-	}
-	rest := text[i+len(prefix):]
-	j := strings.Index(rest, suffix)
-	if j < 0 {
-		return ""
-	}
-	return rest[:j]
 }

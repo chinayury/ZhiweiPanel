@@ -1,6 +1,6 @@
 # 智维面板 ZhiweiPanel
 
-**轻量级自托管建站面板 · v0.9.0**
+**轻量级自托管建站面板**
 
 智维面板（ZhiweiPanel）把"建站面板"这件事收敛到**网站管理本身**：域名、网站目录、文件管理、SSL、PHP、限流、防盗链、防篡改、日志、告警、计划任务、备份、数据库，以及面板自身的安全入口/IP 白名单。刻意不做宝塔那套周边（FTP、容器编排、面板市场），把功能面收窄到能一次交付、长期维护得住的规模——软件商店也只做「已安装检测 + 安装命令提示」的只读目录，不自动安装/卸载任何东西。
 
@@ -68,7 +68,7 @@
 ```bash
 # 1. 准备环境：nginx / PHP-FPM / MariaDB（install.sh 会自动装）
 # 2. 一键安装：二进制地址与管理员密码必须显式给出
-BIN_URL=https://your-host/zhiweipanel-0.1.3-linux-amd64 \
+BIN_URL="https://your-host/zhiweipanel-${VERSION:?请先设置发行版本号}-linux-amd64" \
 PANEL_PASS='CHANGE_ME_at_least_8_chars' \
 INSTALL_PHP=1  PHP_VERSION=8.1 \
 INSTALL_MYSQL=1 \
@@ -431,14 +431,12 @@ type Driver interface {
 
 ### 版本号治理
 
-版本号只有一个权威源：`internal/version/version.go` 的 `const Version = "0.1.3"`。`main.go` 的 `var Version = version.Version` 只做转发，构建时可用 `-ldflags "-X main.Version=..."` 覆盖（`deploy/Dockerfile` 就是这么做的）。
+版本号只有一个权威源：`internal/version/version.go` 的 `const Version`。`main.go` 的 `var Version = version.Version` 只做转发，构建时可用 `-ldflags "-X main.Version=..."` 覆盖（`deploy/Dockerfile` 就是这么做的）。
 
 `internal/version/version_test.go` 是一道**常驻门禁**，跟着 `go test ./...` 一起跑，检查：
 
-- 全锚点对齐：`Dockerfile` 的 `ARG VERSION`、`docker-compose.yml` 的 `${VERSION:-...}`、`install.sh` 的下载文件名、`README.md` 的版本标注、`CHANGELOG.md` 的版本段，必须与权威源一致；
-- 无漂移：代码与部署文件里不允许出现既不是当前版本、也不是已登记历史版本的面板版本号。
-
-改版本号时只改 `internal/version/version.go` 一处，然后跑 `go test ./internal/version/`，门禁会告诉你还有哪些锚点需要同步。
+- 构建默认使用源码中的版本，部署文件与 README 不应写死面板发行版本。
+- CHANGELOG 应包含当前版本段，历史版本登记在 History 中。
 
 ---
 
@@ -449,12 +447,12 @@ type Driver interface {
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 环境要求、裸机 / Docker 部署、参数表、目录结构、升级回滚、卸载、排障、防火墙、权限建议 |
 | [docs/USAGE.md](docs/USAGE.md) | 逐个功能的操作说明：在哪配、字段含义、生效条件、注意事项；含 API 速查表 |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | 版本迭代说明 |
-| [docs/BUGFIX-v0.1.0.md](docs/BUGFIX-v0.1.0.md) | 本轮缺陷修复清单 |
-| [docs/OPTIMIZATION-v0.1.0.md](docs/OPTIMIZATION-v0.1.0.md) | 本轮功能优化与新增日志 |
-| [docs/SECURITY-v0.1.0.md](docs/SECURITY-v0.1.0.md) | 安全审查报告 |
-| [docs/BT-COMPARE-v0.2.0.md](docs/BT-COMPARE-v0.2.0.md) | 与宝塔面板的差异分析 |
-| [docs/RESEARCH-BORROW-v0.9.0.md](docs/RESEARCH-BORROW-v0.9.0.md) | v0.9.0 借鉴宝塔平台能力的来源、设计与边界 |
-| [docs/RESEARCH-BORROW-v0.2.2.md](docs/RESEARCH-BORROW-v0.2.2.md) | 同类项目借鉴要点清单 |
+| [BUGFIX](docs/BUGFIX-v0.1.0.md) | 本轮缺陷修复清单 |
+| [OPTIMIZATION](docs/OPTIMIZATION-v0.1.0.md) | 本轮功能优化与新增日志 |
+| [SECURITY](docs/SECURITY-v0.1.0.md) | 安全审查报告 |
+| [BT-COMPARE](docs/BT-COMPARE-v0.2.0.md) | 与宝塔面板的差异分析 |
+| [RESEARCH-BORROW](docs/RESEARCH-BORROW-v0.9.0.md) | 借鉴宝塔平台能力的来源、设计与边界 |
+| [RESEARCH-BORROW](docs/RESEARCH-BORROW-v0.2.2.md) | 同类项目借鉴要点清单 |
 | [docs/audit/](docs/audit/) | 4 份审计原始报告（本轮修复的缺陷来源） |
 
 ---
@@ -498,5 +496,5 @@ type Driver interface {
 14. **安全入口只遮蔽浏览器 UI**。`/api` 与 `/ws` 保持无前缀（兼容既有 API Token、CI 与 Docker HEALTHCHECK）；入口路径是遮挡，不是认证。
 15. **远程下载允许私网地址**。只拒绝回环、链路本地（含云元数据 169.254.169.254）与组播地址；内网镜像/对象存储可用，但仍不要用它抓取不可信 URL。
 16. **数据库中心只管理 `site_*` 库**。系统库在任何动作前即被拒绝；Docker 镜像未内置 `mysql`/`mysqldump` 客户端时，导入/导出会给出明确错误（宿主机安装 MariaDB 客户端即可）。
-17. **历史流量数字不会自动重算**。v0.8.1 及以前的重复累加导致历史值偏高；v0.9.0 起新采集准确，需要干净起点可在设置页执行「清空统计」。
+17. **历史流量数字不会自动重算**。旧采集器重复累加导致历史值偏高；增量采集器按偏移读取新记录，需要干净起点可在设置页执行「清空统计」。
 18. **文件压缩/解压有硬上限**。压缩 2GB 原始字节 / 2 万条目；解压 500MB / 5000 条目 / 单文件 100MB。超出直接报错，不做自动分卷。
