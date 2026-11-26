@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/zhiwei/panel/internal/model"
+	"github.com/zhiwei/panel/internal/mysql"
 	"github.com/zhiwei/panel/internal/service"
 )
 
@@ -77,6 +78,16 @@ func writeModelError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, service.ErrFileTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, err)
+		return
+	}
+	// MySQL 子系统未启用/连不上：503 比通用 500 更能让前端给出"装 MariaDB"
+	// 这类可操作提示。
+	if errors.Is(err, mysql.ErrNotInstalled) || errors.Is(err, mysql.ErrConnFailed) {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if errors.Is(err, mysql.ErrExists) {
+		writeError(w, http.StatusConflict, err)
 		return
 	}
 	// 未知错误：记录原文，对外只给通用文案

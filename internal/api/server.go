@@ -31,6 +31,15 @@ type Server struct {
 	// 面板重启即清空——重新登录即可，无需持久化。
 	totpMu      sync.Mutex
 	totpPending map[string]totpPendingLogin
+
+	// panelGuard 面板入口守卫（安全入口路径 + IP 白名单）。
+	// 挂在 main.go 的最外层 handler 上，覆盖静态资源 / API / WS。
+	panelGuard *panelGuard
+
+	// 面板自身监听参数（启动时由 main 注入，供设置页展示"当前生效值"）。
+	panelPort int
+	panelBind string
+	panelTLS  bool
 }
 
 // totpPendingLogin 一次「密码已通过、等待动态口令」的登录会话。
@@ -45,12 +54,40 @@ type totpPendingLogin struct {
 // trustedProxies 是受信反向代理的 CIDR 列表；留空表示不采信
 // X-Forwarded-For（默认，也是最安全的形态）。
 func NewServer(svc *service.Service, secureCookie bool, trustedProxies []string) *Server {
-	return &Server{
+	proxies := newTrustedProxySet(trustedProxies)
+	s := &Server{
 		svc:            svc,
 		secureCookie:   secureCookie,
-		trustedProxies: newTrustedProxySet(trustedProxies),
+		trustedProxies: proxies,
 		totpPending:    make(map[string]totpPendingLogin),
 	}
+	// 入口守卫从 settings 表读取 panel_path / panel_ip_allowlist。
+	// 用同一个受信代理集合，保证守卫与鉴权/限流看到同一个客户端 IP。
+	s.panelGuard = newPanelGuard(svc.DB(), proxies)
+	return s
+}
+
+// Guard 包装面板入口守卫。main.go 用它包住整个 mux（含静态资源与 WS）。
+func (s *Server) Guard(next http.Handler) http.Handler {
+	if s.panelGuard == nil {
+		return next
+	}
+	return s.panelGuard.Middleware(next)
+}
+
+// PanelPath 返回当前生效的安全入口路径（空 = 未启用）。
+func (s *Server) PanelPath() string {
+	if s.panelGuard == nil {
+		return ""
+	}
+	return s.panelGuard.Path()
+}
+
+// SetPanelRuntime 注入面板自身的监听参数，供设置页展示当前生效值。
+func (s *Server) SetPanelRuntime(port int, bind string, tlsEnabled bool) {
+	s.panelPort = port
+	s.panelBind = bind
+	s.panelTLS = tlsEnabled
 }
 
 // Routes 注册全部路由，返回 ServeMux 以便上层继续挂载 WebSocket 与静态资源。
@@ -109,6 +146,10 @@ func (s *Server) Routes() *http.ServeMux {
 	reg("/api/backups/", s.handleBackupByID)
 	reg("/api/sites/batch", s.handleSitesBatch)
 
+	// v0.9.0: 数据库中心（只管理 site_* 库）。
+	reg("/api/databases", s.handleDatabases)
+	reg("/api/databases/", s.handleDatabaseByID)
+
 	// v0.2.2：API Token（机器访问）+ 操作审计 + 系统运行指标 + 配置历史。
 	reg("/api/tokens", s.handleTokens)
 	reg("/api/tokens/", s.handleTokenByID)
@@ -116,6 +157,8 @@ func (s *Server) Routes() *http.ServeMux {
 	reg("/api/audit-logs/export", s.handleAuditLogsExport)
 	reg("/api/system/metrics", s.handleMetrics)
 	reg("/api/system/metrics/history", s.handleMetricsHistory)
+	// v0.9.0：清空流量统计（历史虚高数据）。破坏性操作，必须显式确认词。
+	reg("/api/system/traffic/reset", s.handleTrafficReset)
 	reg("/api/system/config-history", s.handleConfigHistory)
 	reg("/api/system/config-history/", s.handleConfigHistoryByID)
 
@@ -310,7 +353,14 @@ func (s *Server) handleSiteByID(w http.ResponseWriter, r *http.Request) {
 			writeModelError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"stats": stats})
+		// v0.9.0：精确状态码分布（旧数据只有 2xx/3xx/4xx/5xx 四桶，
+		// 新表从升级后开始积累，历史日期没有明细属预期）。
+		codes, err := s.svc.DB().GetTrafficStatusSummary(id, days)
+		if err != nil {
+			writeModelError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"stats": stats, "status_codes": codes})
 
 	case "files":
 		s.handleSiteFiles(w, r, id)
@@ -381,14 +431,30 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleSystemInfo 返回面板运行参数（v0.2.1）。
 // 给前端"系统状态"卡片和"新建站点"表单用：知道当前是不是全局 -public-port 模式。
+//
+// v0.9.0 增加 panel 子对象：设置页要区分"已保存值"与"当前生效值"
+// （端口/绑定地址重启后才生效），并展示服务端看到的真实客户端 IP——
+// IP 白名单自锁校验用的就是它。
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, model.ErrBadRequest)
 		return
 	}
+	panel := map[string]any{
+		"port": s.panelPort,
+		"bind": s.panelBind,
+		"tls":  s.panelTLS,
+	}
+	if s.panelGuard != nil {
+		for k, v := range s.panelGuard.Effective() {
+			panel[k] = v
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"public_port":  s.svc.PublicPort(), // 0 = 各站用 site.ListenPorts
 		"disable_ipv6": s.svc.DisableIPv6(),
+		"client_ip":    s.clientIP(r),
+		"panel":        panel,
 	})
 }
 

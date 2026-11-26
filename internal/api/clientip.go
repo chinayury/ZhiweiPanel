@@ -108,8 +108,18 @@ func remoteIP(addr string) string {
 // 规则：直连方在受信代理网段内 → 采信 X-Forwarded-For 首段；
 // 否则 → 用直连地址。
 func (s *Server) clientIP(r *http.Request) string {
+	return clientIPFor(r, s.trustedProxies)
+}
+
+// clientIPFor 是 clientIP 的包级实现。
+//
+// 抽出来是为了让面板入口守卫（panel_guard.go）与鉴权/限流共用同一套
+// 信任规则：守卫挂在最外层，拿不到 Server 的方法，但必须与
+// auth/audit 看到同一个客户端 IP，否则"白名单放行、审计记成代理 IP"
+// 这类不一致会让事故溯源失真。
+func clientIPFor(r *http.Request, trusted *trustedProxySet) string {
 	peer := remoteIP(r.RemoteAddr)
-	if s.trustedProxies.contains(peer) {
+	if trusted.contains(peer) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			if ip := strings.TrimSpace(strings.Split(fwd, ",")[0]); ip != "" {
 				return ip

@@ -7,9 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zhiwei/panel/internal/model"
 	"github.com/zhiwei/panel/internal/service"
@@ -27,6 +32,16 @@ import (
 //	POST   /api/sites/{id}/files/mkdir             {path}
 //	POST   /api/sites/{id}/files/upload            multipart: path=, file=
 //	POST   /api/sites/{id}/files/unzip             JSON: {zip_path, dest}
+//
+// v0.9.0 文件管理 2.0：
+//
+//	GET    /api/sites/{id}/files/download?path=    下载单文件
+//	GET    /api/sites/{id}/files/search?q=&limit=  递归搜索
+//	POST   /api/sites/{id}/files/compress          {base, names[], format}
+//	POST   /api/sites/{id}/files/extract           {archive, dest}
+//	POST   /api/sites/{id}/files/fetch             {url, path, filename}
+//	POST   /api/sites/{id}/files/delete-batch      {paths[], recursive}
+//	POST   /api/sites/{id}/files/chmod             {path, mode}
 //
 // 错误统一经 writeModelError，前端能从 {error, code} 取文案。
 func (s *Server) handleSiteFiles(w http.ResponseWriter, r *http.Request, siteID string) {
@@ -55,11 +70,18 @@ func (s *Server) handleSiteFiles(w http.ResponseWriter, r *http.Request, siteID 
 
 	switch r.Method {
 	case http.MethodGet:
-		if sub == "raw" {
+		switch sub {
+		case "raw":
 			s.fileRaw(w, r, site)
-			return
+		case "download":
+			s.fileDownload(w, r, site)
+		case "search":
+			s.fileSearch(w, r, site)
+		case "", "list":
+			s.fileList(w, r, site)
+		default:
+			writeError(w, http.StatusBadRequest, errors.New("未知 sub-action"))
 		}
-		s.fileList(w, r, site)
 	case http.MethodPut:
 		s.fileWrite(w, r, site)
 	case http.MethodDelete:
@@ -74,6 +96,16 @@ func (s *Server) handleSiteFiles(w http.ResponseWriter, r *http.Request, siteID 
 			s.fileUpload(w, r, site)
 		case "unzip":
 			s.fileUnzip(w, r, site)
+		case "compress":
+			s.fileCompress(w, r, site)
+		case "extract":
+			s.fileExtract(w, r, site)
+		case "fetch":
+			s.fileFetch(w, r, site)
+		case "delete-batch":
+			s.fileDeleteBatch(w, r, site)
+		case "chmod":
+			s.fileChmod(w, r, site)
 		default:
 			writeError(w, http.StatusBadRequest, errors.New("未知 sub-action"))
 		}
@@ -356,4 +388,142 @@ func (s *Server) fileUnzip(w http.ResponseWriter, r *http.Request, site *model.S
 		"extracted": extracted,
 		"dest":      body.Dest,
 	})
+}
+
+// fileDownload 下载单个文件（流式，不把内容读进内存）。
+func (s *Server) fileDownload(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	rel := r.URL.Query().Get("path")
+	full, size, err := s.svc.DownloadFile(r.Context(), site, rel)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	defer f.Close()
+	name := filepath.Base(full)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	_, _ = io.Copy(w, f)
+}
+
+// fileSearch 递归搜索文件名。
+func (s *Server) fileSearch(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	entries, err := s.svc.SearchFiles(r.Context(), site, q, limit)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "q": q})
+}
+
+// fileCompress 压缩当前目录下选中的条目。
+func (s *Server) fileCompress(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	var body struct {
+		Base   string   `json:"base"`
+		Names  []string `json:"names"`
+		Format string   `json:"format"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	archiveRel, err := s.svc.CompressPaths(ctx, site, body.Base, body.Names, body.Format)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": archiveRel})
+}
+
+// fileExtract 解压 zip / tar / tar.gz。
+func (s *Server) fileExtract(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	var body struct {
+		Archive string `json:"archive"`
+		Dest    string `json:"dest"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	n, err := s.svc.ExtractArchive(ctx, site, body.Archive, body.Dest)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "extracted": n, "dest": body.Dest})
+}
+
+// fileFetch 从远程 URL 下载文件到指定目录。
+func (s *Server) fileFetch(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	var body struct {
+		URL      string `json:"url"`
+		Path     string `json:"path"`
+		Filename string `json:"filename"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	rel, n, err := s.svc.RemoteDownload(ctx, site, body.URL, body.Path, body.Filename)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": rel, "bytes": n})
+}
+
+// fileDeleteBatch 批量删除（递归需显式 recursive=true）。
+func (s *Server) fileDeleteBatch(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	var body struct {
+		Paths     []string `json:"paths"`
+		Recursive bool     `json:"recursive"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	n, err := s.svc.BatchDelete(ctx, site, body.Paths, body.Recursive)
+	if err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n})
+}
+
+// fileChmod 修改权限。
+func (s *Server) fileChmod(w http.ResponseWriter, r *http.Request, site *model.Site) {
+	var body struct {
+		Path string `json:"path"`
+		Mode string `json:"mode"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.Chmod(r.Context(), site, body.Path, body.Mode); err != nil {
+		writeModelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

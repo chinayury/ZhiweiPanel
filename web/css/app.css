@@ -1112,7 +1112,7 @@ select.input { cursor: pointer; appearance: none; padding-right: 28px;
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap;
 }
-.fm-toolbar-right { display: flex; gap: 8px; }
+.fm-toolbar-right { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 .fm-breadcrumb {
   display: flex; align-items: center; flex-wrap: wrap;
@@ -1138,6 +1138,10 @@ select.input { cursor: pointer; appearance: none; padding-right: 28px;
 .fm-table .fm-name a { color: var(--text); text-decoration: none; }
 .fm-table .fm-name a:hover { color: var(--primary); text-decoration: underline; }
 .fm-icon { display: inline-block; width: 18px; text-align: center; margin-right: 4px; opacity: 0.85; }
+.fm-check { width: 34px; }
+.fm-check input { cursor: pointer; }
+.fm-mode { margin-left: 8px; font-size: 11px; color: var(--text-sub); font-family: var(--font-mono, monospace); }
+.fm-search-results { max-height: 360px; overflow: auto; margin-top: 10px; }
 .fm-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .fm-actions .btn { padding: 3px 9px; font-size: 12px; }
 .fm-empty { text-align: center; color: var(--text-sub); padding: 24px 12px; }

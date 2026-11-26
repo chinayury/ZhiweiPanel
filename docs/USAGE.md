@@ -1,6 +1,6 @@
 # 智维面板 ZhiweiPanel 功能使用说明
 
-适用版本：**v0.1.1**（版本号权威源：`internal/version/version.go`）。
+适用版本：**v0.9.0**（版本号权威源：`internal/version/version.go`）。
 
 本文讲**每个功能怎么用**：在哪配、字段含义、生效条件、注意事项。安装运维见 [DEPLOYMENT.md](DEPLOYMENT.md)，项目概览见 [README.md](../README.md)。
 
@@ -199,20 +199,28 @@ SMTP 密码读取时以 `********` 脱敏显示；保存时传 `********` 视为
 | 操作 | 说明 |
 |------|------|
 | 浏览 | 列出当前目录内容，点击目录进入 |
-| 上传 | 多文件上传，`multipart/form-data`，上传到当前目录 |
+| 上传 | 多文件上传，`multipart/form-data`，上传到当前目录；.zip 上传后自动解压 |
 | 编辑 | 打开文本文件在线编辑后保存 |
 | 新建文件 / 新建目录 | 填名称即可 |
 | 重命名 | 同站点根内改名/移动 |
 | 删除 | 需二次确认 |
-| 解压 | 对站点内的 zip 解压，可指定目标目录 |
+| 下载 | 选一个文件，流式下载（不读进内存） |
+| 压缩 | 勾选条目后生成 `archive-<时间>.zip` 或 `.tar.gz` |
+| 解压 | 选一个压缩包，解压 zip / tar / tar.gz 到指定目录 |
+| 远程下载 | 输入 http/https URL，下载到当前目录（≤100MB、60s） |
+| 批量删除 | 多选后删除；选中目录时递归删除，需确认 |
+| 权限 | 修改单个文件/目录的八进制权限（如 644 / 0755） |
+| 搜索 | 按文件名子串递归搜索（最多 200 条，跳过 logs/.well-known） |
 
-**约束**（服务端强制，返回 403/400）：
+**约束**（服务端强制，返回 403/400/413）：
 
 - 所有路径必须落在站点根目录内（`..` 逃逸、软链接指向站外一律拒绝）；
 - **`logs/` 与 `.well-known/` 是受保护子目录**，不可浏览、不可读写、不可解压进去；
-- 单文件读/写上限 50MB，超出报 413；
-- 不能直接覆盖或删除根目录；
-- 解压会拒绝 zip-slip、绝对路径与符号链接条目。
+- 单文件读/写上限 50MB，超出报 413；远程下载上限 100MB；
+- 不能直接覆盖或删除根目录；批量删除目录必须显式递归确认；
+- 解压会拒绝 zip-slip、绝对路径、symlink/hardlink 与特殊文件；
+- 压缩上限 2GB 原始字节 / 2 万条目；解压上限 500MB / 5000 条目 / 单文件 100MB；
+- 远程下载只允许 http/https，拒绝回环、链路本地（含云元数据）与组播地址；允许私网地址（内网镜像常用），但仍只应对可信 URL 使用。
 
 ### 4.3 子目录绑定
 
@@ -404,6 +412,8 @@ SMTP 密码读取时以 `********` 脱敏显示；保存时传 `********` 视为
 **密码只明文回显一次**：创建响应带 `show_password: true`，界面弹「请保存数据库密码」模态框。关闭后任何 GET 路径都拿不到明文（读取时被脱敏）。丢了只能重置。
 
 **删站联动 drop**：`DELETE /api/sites/{id}` 会依次 `RevokePrivileges` → `DropUser` → `DropDatabase`，最后删站点记录。
+
+**v0.9.0 站点页签新增操作**：「打开数据库中心」「重置密码」「导出 .sql.gz」。重置密码会弹一次性明文，使用该库的应用需同步更新配置。
 
 **前置条件**：MySQL 子系统必须就绪。`GET /api/system/mysql` 返回 `{installed, running, version, server, socket}`；凭据文件 `<data>/mysql-root.cnf` 存在（`install.sh` 生成，权限 0600）时子系统才会初始化。未就绪时向导里的「同时创建 MySQL 数据库」复选框会被禁用并提示原因。
 
@@ -829,34 +839,69 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 
 ## 十一、设置
 
-### 11.1 面板设置
+### 11.1 面板访问安全
 
 | 设置项 | 说明 |
 |--------|------|
-| 面板端口 | 面板 HTTP 服务监听端口，**修改后需重启后端生效** |
-| 面板路径 | 访问路径前缀，如 `/panel`（留空 = 根路径） |
-| 默认 PHP 版本 | 新建站点时的默认 PHP 版本 |
-| 默认站点根目录 | 新建站点根目录的默认父路径，如 `/www/wwwroot` |
-| 日志保留天数 | 站点日志默认保留天数 |
-| 时区 | 影响日志与告警的时间显示 |
+| 安全入口路径 | 2~32 位字母/数字/下划线/短横线，可一键随机生成。留空 = 不启用。启用后 `/` 返回 404，UI 移到 `/<入口>/`；旧地址立即失效 |
+| IP 白名单 | 一行一个 IP 或 CIDR（IPv4/IPv6）。留空 = 不限制；回环地址始终放行（SSH 隧道自救）。保存时服务端校验当前客户端 IP，会被挡住则拒绝保存 |
+| 面板端口 | 重启面板后生效；数据库设置优先于启动参数 `-port`。Docker 部署还需同步 compose 端口映射 |
+| 绑定地址 | 空 = 所有网卡；填 `127.0.0.1` 只允许本机访问（重启后生效） |
 
-### 11.2 运行时信息
+- **安全入口只遮蔽浏览器 UI**：`/api` 与 `/ws` 始终不带前缀，API Token、CI、Docker HEALTHCHECK 不受影响。
+- 安全入口/IP 白名单/端口/绑定**仅浏览器会话可改**，API Token 一律 403（防止泄漏的 write Token 把管理员锁在门外）。
+- 忘记入口：SSH 启动时加 `-panel-path=<新路径>` 强制覆盖；显式 `-panel-path=` 清除入口。
+- IP 白名单把自己挡住：从本机 `curl 127.0.0.1:<端口>` 登录后改回，或直接改 `settings` 表的 `panel_ip_allowlist` 并重启。
+
+### 11.2 面板默认项
+
+| 设置项 | 说明 |
+|--------|------|
+| 默认 PHP 版本 | 新建站点时的默认 PHP 版本（向导与 `CreateSite` 都生效） |
+| 默认站点根目录 | 新建站点根目录的默认父路径，如 `/www/wwwroot` |
+| 日志保留天数 | 预留项：当前版本仅记录，站点日志保留仍按站点配置 |
+| 时区 | 预留项：当前版本仅记录，界面时间取浏览器时区 |
+
+### 11.3 运行时信息
 
 面板自动探测并展示：nginx 是否安装/运行/版本、配置检测状态、可用 PHP 版本与 socket、运行时类型（host/docker）、磁盘用量、Docker 状态。
 
-### 11.3 nginx 主配置
+### 11.4 nginx 主配置
 
 「查看配置」读取 nginx 主配置原文（只读）；「测试配置」执行真实的 `nginx -t` 并显示结果。
 
 > 宿主机模式下主配置位置因发行版而异，读不到时会退回显示面板生成的 http 级配置。
 
+### 11.5 流量统计维护
+
+「清空统计」会删除所有站点的日汇总、UV 明细、状态码明细与采集 checkpoint（需输入 `RESET`）。用于清理 v0.8.1 及以前重复累加造成的历史虚高；清空后下一轮采集从当前日志末尾重新开始，不会把旧日志重算一遍。
+
 ---
 
-## 十二、API 速查
+## 十二、数据库中心（平台级）
+
+左侧导航「数据库」。只管理面板自己创建的 `site_*` 库。
+
+| 列/操作 | 说明 |
+|---------|------|
+| 库名 / 字符集 | `information_schema` 实时读取 |
+| 站点 | 依据 `sites.config.mysql.name` 反查；未关联的库显示「未关联」 |
+| 表数 / 大小 | 数据 + 索引合计 |
+| 改密 | 重置该库用户密码，一次性明文弹窗（离开即不可再查看）；同步更新站点配置 |
+| 导出 | `mysqldump --single-transaction` + gzip，浏览器下载 `<库名>.sql.gz`（100MB 上限） |
+| 导入 | 上传 `.sql` / `.sql.gz`，解压后 ≤100MB，服务端落临时文件后交给 `mysql` 客户端 |
+| 优化 | 对库内所有基础表执行 `OPTIMIZE TABLE`，可能锁表，建议低峰期 |
+| 复制连接 | 复制 `mysql -h <host> -P <port> -u <user> -p <db>`（密码需手动输入） |
+
+**安全边界**：只允许 `site_` 前缀且在 managed 列表中的库；`mysql` / `sys` / `performance_schema` 在任何动作前即 404。导入/导出依赖宿主机的 `mysql` / `mysqldump` 命令；Docker 镜像未内置客户端时会明确报错。
+
+---
+
+## 十三、API 速查
 
 面板 API 全部挂在 `/api` 前缀下。浏览器会话用 HttpOnly Cookie 认证；机器访问用 API Token（`Authorization: Bearer <token>` 或 `X-API-Token: <token>`）。
 
-### 12.1 认证与账户
+### 13.1 认证与账户
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -874,7 +919,7 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 | PUT | `/api/admin/smtp` | 写 SMTP 配置 |
 | POST | `/api/admin/smtp/test` | 发测试邮件 |
 
-### 12.2 站点
+### 13.2 站点
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -887,20 +932,27 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 | POST | `/api/sites/{id}/reload` | 全量下发 nginx 配置 |
 | GET | `/api/sites/{id}/config` | 站点配置 + http 片段 + `nginx -t` 结果 |
 | GET | `/api/sites/{id}/logs?type=access\|error&limit=&page=` | 访问/错误日志 |
-| GET | `/api/sites/{id}/stats?days=7` | 流量统计（1–365 天） |
+| GET | `/api/sites/{id}/stats?days=7` | 流量统计（1–365 天，含 `status_codes` 精确状态码明细） |
 | GET | `/api/sites/{id}/files?path=` | 列目录 |
 | GET | `/api/sites/{id}/files/raw?path=` | 读文件（文本返回原文，二进制返回 base64 JSON） |
+| GET | `/api/sites/{id}/files/download?path=` | 下载单文件（流式） |
+| GET | `/api/sites/{id}/files/search?q=&limit=` | 递归搜索文件名（≤200 条） |
 | PUT | `/api/sites/{id}/files?path=` | 写文件（body `{"content":"…","encoding":"base64"}`） |
 | DELETE | `/api/sites/{id}/files?path=` | 删文件/目录 |
 | POST | `/api/sites/{id}/files/rename` | 重命名（body `{"from":"…","to":"…"}`） |
 | POST | `/api/sites/{id}/files/mkdir` | 新建目录 |
 | POST | `/api/sites/{id}/files/upload` | 上传文件（multipart） |
-| POST | `/api/sites/{id}/files/unzip` | 解压（body `{"zip_path":"…","dest":"…"}`） |
+| POST | `/api/sites/{id}/files/unzip` | 解压 zip（body `{"zip_path":"…","dest":"…"}`） |
+| POST | `/api/sites/{id}/files/compress` | 压缩（body `{"base":"…","names":[…],"format":"zip\|tar.gz"}`） |
+| POST | `/api/sites/{id}/files/extract` | 解压 zip/tar/tar.gz（body `{"archive":"…","dest":"…"}`） |
+| POST | `/api/sites/{id}/files/fetch` | 远程下载（body `{"url":"…","path":"…","filename":"…"}`） |
+| POST | `/api/sites/{id}/files/delete-batch` | 批量删除（body `{"paths":[…],"recursive":false}`） |
+| POST | `/api/sites/{id}/files/chmod` | 修改权限（body `{"path":"…","mode":"0644"}`） |
 | POST | `/api/sites/{id}/baseline` | 建立防篡改基线 |
 | GET | `/api/sites/{id}/tamper` | 篡改检测结果 |
 | POST | `/api/sites/batch` | 批量启停（body `{"action":"…","ids":[…]}`） |
 
-### 12.3 证书与 ACME
+### 13.3 证书与 ACME
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -917,18 +969,19 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 | POST | `/api/acme/accounts` | 创建 ACME 账户 |
 | GET | `/api/dns-providers` | DNS-01 提供商与凭据字段说明 |
 
-### 12.4 系统与运维
+### 13.4 系统与运维
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/settings` | 面板设置 |
-| PUT | `/api/settings` | 写面板设置 |
+| GET | `/api/settings` | 面板设置（含 `panel_access` 生效状态） |
+| PUT | `/api/settings` | 写面板设置；`panel_path`/`panel_ip_allowlist`/`panel_port`/`panel_bind` 仅浏览器会话可改（Token 403） |
 | GET | `/api/system/status` | 系统总览（nginx / PHP / 运行时 / 磁盘 / Docker） |
-| GET | `/api/system/info` | 运行参数（`public_port` / `disable_ipv6`） |
+| GET | `/api/system/info` | 运行参数（`public_port` / `disable_ipv6` / `panel` / `client_ip`） |
 | GET | `/api/system/mysql` | MySQL 子系统状态 |
 | GET | `/api/system/nginx-config` | nginx 主配置 |
 | POST | `/api/system/nginx-test` | 执行 `nginx -t` |
 | POST | `/api/system/config-apply` | 全量下发配置 |
+| POST | `/api/system/traffic/reset` | 清空流量统计与 checkpoint（body `{"confirm":"RESET"}`） |
 | POST | `/api/system/logs/tail?site_id=` | 取 WebSocket 地址 |
 | GET | `/api/system/metrics` | 宿主机指标（`current` + `history`） |
 | GET | `/api/system/config-history` | 配置快照列表 |
@@ -946,7 +999,7 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 | POST | `/api/alerts/test` | 测试通知渠道 |
 | WS | `/ws/logs` | 实时日志推送（需有效会话） |
 
-### 12.5 计划任务与备份
+### 13.5 计划任务与备份
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -962,6 +1015,17 @@ CSV 带 UTF-8 BOM（Excel 直接打开中文不乱码），文件名 `zhiweipane
 | DELETE | `/api/backups/{id}` | 删除备份 |
 | GET | `/api/backups/{id}/download` | 下载备份 |
 | POST | `/api/backups/{id}/restore` | 恢复预览（仅站点备份） |
+
+### 13.6 数据库中心
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/databases` | 受管 `site_*` 库列表（大小/表数/字符集/站点映射） |
+| GET | `/api/databases/{name}` | 单个库详情 |
+| POST | `/api/databases/{name}/password` | 重置密码（响应含一次性明文） |
+| POST | `/api/databases/{name}/optimize` | `OPTIMIZE TABLE` 全部基础表 |
+| GET | `/api/databases/{name}/export` | 下载 `.sql.gz`（mysqldump + gzip） |
+| POST | `/api/databases/{name}/import` | 上传 `.sql`/`.sql.gz` 导入（multipart `file=`） |
 
 ---
 

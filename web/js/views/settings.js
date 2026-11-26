@@ -2,30 +2,36 @@
 import { api, formatBytes, formatDateTime } from '../api.js';
 import {
   h, clear, icon, button, tag, field, textInput, numberInput, selectInput,
-  loading, errorState, toast, modal, codeBox, sectionTitle, grid, progressBar,
-  checkboxField,
+  textArea, loading, errorState, toast, modal, codeBox, sectionTitle, grid,
+  progressBar, checkboxField,
 } from '../components.js';
 import { store } from '../app.js';
 
 // 设置项元数据：键 → 中文标签 / 类型 / 说明
 const SETTING_FIELDS = [
-  { key: 'panel_port', label: '面板端口', type: 'number', hint: '面板 HTTP 服务监听端口，修改后需重启后端生效' },
-  { key: 'panel_path', label: '面板路径', type: 'text', hint: '面板访问路径前缀，如 /panel（留空表示根路径）' },
-  { key: 'default_php_version', label: '默认 PHP 版本', type: 'php', hint: '新建站点时的默认 PHP 版本' },
+  { key: 'default_php_version', label: '默认 PHP 版本', type: 'php', hint: '新建站点时的默认 PHP 版本（向导与 API 都生效）' },
   { key: 'default_site_root', label: '默认站点根目录', type: 'text', hint: '新建站点根目录的默认父路径，如 /www/wwwroot' },
-  { key: 'log_retention_days', label: '日志保留天数', type: 'number', hint: '站点日志默认保留天数，超期自动清理' },
-  { key: 'timezone', label: '时区', type: 'select', options: ['Asia/Shanghai', 'Asia/Chongqing', 'UTC', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', 'America/New_York'], hint: '影响日志与告警时间显示' },
+  { key: 'log_retention_days', label: '日志保留天数', type: 'number', hint: '保留项：当前版本仅记录，站点日志保留仍按站点配置' },
+  { key: 'timezone', label: '时区', type: 'select', options: ['Asia/Shanghai', 'Asia/Chongqing', 'UTC', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', 'America/New_York'], hint: '保留项：当前版本仅记录，界面时间取浏览器时区' },
 ];
+
+// 面板访问安全：仅浏览器会话可改（后端强制），保存后立即生效。
+const PANEL_SECURITY_FIELDS = ['panel_path', 'panel_ip_allowlist', 'panel_port', 'panel_bind'];
 
 export async function render(container) {
   clear(container);
   container.appendChild(loading('正在加载设置…'));
 
-  let settings = {}, status = null;
+  let settings = {}, status = null, sysInfo = null;
   try {
-    const [s, st] = await Promise.all([api.settings.get(), api.system.status().catch(() => null)]);
+    const [s, st, inf] = await Promise.all([
+      api.settings.get(),
+      api.system.status().catch(() => null),
+      api.system.info().catch(() => null),
+    ]);
     settings = s.settings || {};
     status = st;
+    sysInfo = inf || {};
   } catch (err) {
     clear(container).appendChild(errorState(`设置加载失败：${err.message || err}`, () => render(container)));
     return;
@@ -33,6 +39,11 @@ export async function render(container) {
 
   // 编辑副本：点保存才提交
   const draft = { ...settings };
+  for (const k of PANEL_SECURITY_FIELDS) {
+    if (draft[k] === undefined || draft[k] === null) draft[k] = '';
+  }
+  const panelInfo = (sysInfo && sysInfo.panel) || {};
+  const clientIP = (sysInfo && sysInfo.client_ip) || '';
   // 后端 SystemStatus.PHP 是 []PHPVersion 数组，不是带 versions 字段的对象。
   // 早期读 status.php.versions 恒为 undefined，PHP 下拉只能走写死的兜底列表，
   // 设置页的运行时信息也恒显示"未检测到 PHP"。
@@ -51,6 +62,99 @@ export async function render(container) {
       button('保存设置', doSave, 'primary', 'save'),
     ]),
   ]));
+
+  // ---------------- 面板访问安全（v0.9.0） ----------------
+  const accessLine = h('div', { class: 'runtime-brief' });
+  const pathInp = textInput(draft.panel_path, (v) => { draft.panel_path = v; updateAccessPreview(); }, {
+    placeholder: '如 zw-8f3k2a（留空 = 不启用）',
+  });
+  const ipInp = textArea(draft.panel_ip_allowlist, (v) => { draft.panel_ip_allowlist = v; }, {
+    rows: 4, mono: true, placeholder: '10.0.0.0/8\n192.168.1.10',
+  });
+  const portInp = numberInput(draft.panel_port, (v) => { draft.panel_port = v; updateAccessPreview(); }, {
+    min: 1, max: 65535, placeholder: `当前 ${panelInfo.port || '-'}`,
+  });
+  const bindInp = textInput(draft.panel_bind, (v) => { draft.panel_bind = v; }, {
+    placeholder: `当前 ${panelInfo.bind || '0.0.0.0'}`,
+  });
+
+  function normalizedPath() {
+    return String(pathInp.value || '').trim().replace(/^\/+|\/+$/g, '');
+  }
+  function currentPort() {
+    const n = parseInt(portInp.value, 10);
+    return n > 0 ? n : (Number(panelInfo.port) || 0);
+  }
+  // 按"协议 + 当前主机 + 端口 + 入口路径"拼出可点击地址。
+  function buildAccessURL(path, port) {
+    let host = location.hostname;
+    if (host.includes(':') && !host.startsWith('[')) host = '[' + host + ']';
+    const defaultPort = location.protocol === 'https:' ? 443 : 80;
+    const p = Number(port) || 0;
+    const portPart = p && p !== defaultPort ? ':' + p : '';
+    const pth = String(path || '').replace(/^\/+|\/+$/g, '');
+    return `${location.protocol}//${host}${portPart}/${pth ? pth + '/' : ''}`;
+  }
+  function updateAccessPreview() {
+    clear(accessLine);
+    const active = String(panelInfo.path || '');
+    accessLine.appendChild(h('span', {}, '当前生效：'));
+    accessLine.appendChild(active
+      ? tag(`/${active}/`, 'success')
+      : tag('根路径（未启用安全入口）', 'default'));
+    const draftPath = normalizedPath();
+    if (draftPath !== active) {
+      accessLine.appendChild(h('span', { class: 'field-hint' }, `保存后：${buildAccessURL(draftPath, currentPort())}`));
+    }
+    accessLine.appendChild(h('span', { class: 'field-hint' }, 'API 始终为 /api，安全入口只影响浏览器界面。'));
+  }
+
+  const genPathBtn = button('随机生成', () => {
+    pathInp.value = randomPanelPath();
+    draft.panel_path = pathInp.value;
+    updateAccessPreview();
+    toast('已生成新的安全入口，保存后生效', 'success');
+  }, 'default', 'refresh');
+  const copyAccessBtn = button('复制当前地址', () => {
+    copyText(buildAccessURL(panelInfo.path || '', panelInfo.port));
+  }, 'ghost', 'download');
+  const addIPBtn = button('加入当前 IP', () => {
+    if (!clientIP) {
+      toast('无法获取当前客户端 IP', 'error');
+      return;
+    }
+    const lines = String(ipInp.value || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!lines.includes(clientIP)) {
+      lines.push(clientIP);
+      ipInp.value = lines.join('\n');
+      draft.panel_ip_allowlist = ipInp.value;
+      toast(`已加入 ${clientIP}`, 'success');
+    } else {
+      toast('当前 IP 已在白名单中', 'info');
+    }
+  }, 'default', 'plus');
+
+  const securityGrid = h('div', { class: 'settings-grid' }, [
+    field('安全入口路径', h('div', {}, [
+      pathInp,
+      h('div', { class: 'inline-actions' }, [genPathBtn, copyAccessBtn]),
+    ]), '2~32 位字母、数字、下划线或短横线；留空 = 不启用。根路径会返回 404。'),
+    field('IP 白名单', ipInp, `一行一个 IP 或 CIDR；留空 = 不限制。当前客户端 IP：${clientIP || '未知'}；回环地址始终放行。`, true),
+    field('面板端口', portInp, '重启面板后生效；Docker 部署还需同步 compose 端口映射。'),
+    field('绑定地址', bindInp, '空 = 所有网卡；填 127.0.0.1 则只允许本机访问（重启后生效）。'),
+  ]);
+  container.appendChild(h('div', { class: 'card' }, [
+    h('div', { class: 'card-title' }, [
+      h('span', {}, '面板访问安全'),
+      h('div', { class: 'card-title-extra' }, [addIPBtn]),
+    ]),
+    h('div', { class: 'card-body' }, [
+      accessLine,
+      securityGrid,
+      h('div', { class: 'field-hint' }, '安全入口与 IP 白名单保存后立即生效；端口/绑定地址需重启面板。仅浏览器会话可修改这三类设置，API Token 无权限。'),
+    ]),
+  ]));
+  updateAccessPreview();
 
   // ---------------- 面板设置 ----------------
   const fieldsBox = h('div', { class: 'settings-grid' });
@@ -160,14 +264,67 @@ export async function render(container) {
       if (draft[f.key] === undefined || draft[f.key] === null) continue;
       payload[f.key] = String(draft[f.key]);
     }
+    for (const k of PANEL_SECURITY_FIELDS) {
+      let v = draft[k];
+      // 端口留空/0 = 清除设置（回落到启动参数），不能把 "0" 发给后端。
+      if (k === 'panel_port' && (!v || Number(v) <= 0)) v = '';
+      payload[k] = String(v === undefined || v === null ? '' : v);
+    }
+
+    const oldPath = String(settings.panel_path || '').replace(/^\/+|\/+$/g, '');
+    const oldPort = Number(settings.panel_port) || 0;
+    const oldBind = String(settings.panel_bind || '');
+
     try {
-      await api.settings.put(payload);
+      const res = await api.settings.put(payload);
+      const newPath = res && res.panel_path !== undefined
+        ? String(res.panel_path || '')
+        : normalizedPath();
+      const newPort = Number(payload.panel_port) || 0;
+
       Object.assign(settings, payload);
-      Object.assign(store.settings, payload);
-      toast('设置已保存', 'success');
+      settings.panel_path = newPath;
+      if (store.settings) Object.assign(store.settings, payload, { panel_path: newPath });
+      draft.panel_path = newPath;
+
+      if (newPath !== oldPath) {
+        showAccessChanged(newPath, newPort);
+      } else if (newPort !== oldPort || String(payload.panel_bind) !== oldBind) {
+        toast('设置已保存；端口/绑定地址需重启面板后生效', 'info', 4200);
+      } else {
+        toast('设置已保存', 'success');
+      }
     } catch (e) {
       toast(e.message || '保存失败', 'error');
     }
+  }
+
+  // 安全入口保存后旧地址立即 404，必须把新地址明确交给用户，
+  // 并给一个一键跳转，避免"保存成功、自己也进不去"。
+  function showAccessChanged(path, savedPort) {
+    const url = buildAccessURL(path, panelInfo.port);
+    const m = modal({
+      title: '安全入口已更新',
+      width: '560px',
+      content: h('div', {}, [
+        h('p', {}, path
+          ? '旧入口已立即失效（根路径返回 404）。新的访问地址：'
+          : '安全入口已关闭，面板回到根路径访问：'),
+        codeBox(url, { maxHeight: '90px' }),
+        h('p', { class: 'field-hint' }, 'API 仍为 /api，不受安全入口影响。请更新收藏夹。'),
+        (savedPort && Number(savedPort) !== Number(panelInfo.port))
+          ? h('p', { class: 'field-hint' }, `端口已保存为 ${savedPort}，需重启面板后生效；上面的地址仍使用当前端口。`)
+          : null,
+        h('p', { class: 'field-hint' }, '如果忘记入口：SSH 启动时加 -panel-path=<新路径> 可强制覆盖恢复。'),
+      ]),
+      footer: [
+        button('稍后', () => m.close(), 'default'),
+        button('复制新地址', () => copyText(url), 'default', 'download'),
+        button('打开新入口', () => {
+          location.href = url + (location.hash || '#/dashboard');
+        }, 'primary', 'check'),
+      ],
+    });
   }
 
   // ---------------- 修改密码 ----------------
@@ -224,6 +381,10 @@ export async function render(container) {
     h('div', { class: 'card-title' }, h('span', {}, '两步验证（TOTP）')),
     twofaBox,
   ]));
+
+  // 初始加载一次。v0.8.x 这里漏了调用，设置页会永远停在
+  // "加载两步验证状态…"，开启/关闭按钮根本不出现。
+  draw2FA();
 
   async function draw2FA() {
     clear(twofaBox);
@@ -479,6 +640,49 @@ export async function render(container) {
   container.appendChild(smtpCard);
   const smtpBody = smtpCard.querySelector('.card-body');
 
+  // ---------------- 流量统计维护（v0.9.0） ----------------
+  container.appendChild(h('div', { class: 'card' }, [
+    h('div', { class: 'card-title' }, [
+      h('span', {}, '流量统计维护'),
+      h('div', { class: 'card-title-extra' }, button('清空统计', showResetTraffic, 'danger', 'trash')),
+    ]),
+    h('div', { class: 'card-body' }, [
+      h('div', { class: 'field-hint' }, 'v0.8.1 及以前的采集每 5 分钟重读最近 5 万行并累加，历史请求数/流量会偏高。v0.9.0 起改为按日志偏移增量采集，新数据准确；清空后可从一个干净的起点重新统计。'),
+    ]),
+  ]));
+
+  function showResetTraffic() {
+    const confirmInput = textInput('', null, { placeholder: '输入 RESET' });
+    const err = h('div', { class: 'login-error', style: { display: 'none' } });
+    const m = modal({
+      title: '清空流量统计',
+      width: '500px',
+      content: h('div', {}, [
+        h('p', {}, '将删除所有站点的日汇总、UV 明细、状态码明细与采集 checkpoint。下一轮采集从当前日志末尾开始，不会把旧日志重新算一遍。此操作不可撤销。'),
+        field('确认词', confirmInput, '输入 RESET 才会执行'),
+        err,
+      ]),
+      footer: [
+        button('取消', () => m.close(), 'default'),
+        button('确认清空', async () => {
+          if (confirmInput.value.trim() !== 'RESET') {
+            err.textContent = '请输入 RESET';
+            err.style.display = 'block';
+            return;
+          }
+          try {
+            await api.system.resetTraffic('RESET');
+            toast('流量统计已清空', 'success');
+            m.close();
+          } catch (e) {
+            err.textContent = e.message || '清空失败';
+            err.style.display = 'block';
+          }
+        }, 'danger'),
+      ],
+    });
+  }
+
   // 加载账户 + SMTP
   let account = null;
   let smtp = null;
@@ -648,5 +852,44 @@ export async function render(container) {
     } catch (e) {
       toast('发送失败：' + (e.message || e), 'error', 4800);
     }
+  }
+}
+
+// 生成随机安全入口：前缀 zw- + 10 位无歧义字符（去掉 i/l/o/0/1）。
+function randomPanelPath() {
+  const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const buf = new Uint8Array(10);
+  if (window.crypto && crypto.getRandomValues) {
+    crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  let s = 'zw-';
+  for (const b of buf) s += abc[b % abc.length];
+  return s;
+}
+
+// 复制文本：优先 Clipboard API（HTTPS/localhost），HTTP 内网地址回退 execCommand。
+async function copyText(text) {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      toast('已复制', 'success');
+      return;
+    }
+  } catch (e) { /* 回退到 execCommand */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    toast(ok ? '已复制' : '复制失败，请手动选择文本', ok ? 'success' : 'error');
+  } catch (e) {
+    toast('复制失败，请手动选择文本', 'error');
   }
 }

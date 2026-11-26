@@ -5,19 +5,26 @@ import {
   switchControl, loading, errorState, emptyState, toast, card, grid,
   sectionTitle, iconButton, certDaysBadge,
 } from '../components.js';
-import { ctx } from '../app.js';
+import { ctx, store } from '../app.js';
 
 const STEPS = ['域名', '根目录', 'PHP 版本', 'SSL 设置', '确认创建'];
 
 export async function render(container) {
   clear(container);
 
+  // v0.9.0：设置页的"默认站点根目录 / 默认 PHP 版本"真正接线。
+  // 向导与后端 CreateSite 使用同一份 settings 值，避免"设置里写一套、建站用另一套"。
+  // 必须在 render 内读取：settings 可能在本模块首次加载之后被用户修改。
+  const bootSettings = store.settings || {};
+  const defaultRootParent = String(bootSettings.default_site_root || '/www/wwwroot').replace(/\/+$/, '') || '/www/wwwroot';
+  const defaultPHPVersion = String(bootSettings.default_php_version || '8.2').trim() || '8.2';
+
   // 向导草稿（站点对象的子集，其余交给后端补默认值）
   const draft = {
     name: '',
     domains: [],
     root: { path: '', user: 'www', group: 'www', symlink: false },
-    php: { enabled: true, version: '8.2', socket: '', max_execution_time: 30, memory_limit: '256M', disable_functions: [], custom_php_config: '' },
+    php: { enabled: true, version: defaultPHPVersion, socket: '', max_execution_time: 30, memory_limit: '256M', disable_functions: [], custom_php_config: '' },
     ssl: { enabled: false, cert_file: '', key_file: '', force_https: true, hsts: false, hsts_max_age: 31536000, protocols: ['TLSv1.2', 'TLSv1.3'], ocsp: false, use_http2: true },
     index: { files: ['index.php', 'index.html', 'index.htm'] },
     raw_conf: '',
@@ -31,6 +38,7 @@ export async function render(container) {
 
   // 可选数据：PHP 版本、可用证书
   let phpVersions = ['8.2', '8.1', '8.0', '7.4', '5.6'];
+  if (!phpVersions.includes(defaultPHPVersion)) phpVersions.unshift(defaultPHPVersion);
   let certs = [];
   try {
     const [st, cr] = await Promise.all([api.system.status().catch(() => null), api.certs.list().catch(() => ({ certs: [] }))]);
@@ -38,6 +46,7 @@ export async function render(container) {
     // 恒为 undefined，PHP 下拉只能走写死的兜底列表。
     if (st && Array.isArray(st.php) && st.php.length) {
       phpVersions = st.php.map((p) => String(p && p.version)).filter(Boolean);
+      if (!phpVersions.includes(defaultPHPVersion)) phpVersions.unshift(defaultPHPVersion);
     }
     certs = cr.certs || [];
   } catch (e) {
@@ -187,7 +196,7 @@ export async function render(container) {
       field('根目录路径', textInput(draft.root.path, (v) => {
         draft.root.path = v;
         suggestBox.textContent = suggestPath(v);
-      }, { placeholder: '/www/wwwroot/example.com' }), '必须是服务器上真实存在的目录'),
+      }, { placeholder: `${defaultRootParent}/example.com` }), '必须是服务器上真实存在的目录'),
       suggestBox,
       sectionTitle('运行身份'),
       grid(2,
@@ -212,17 +221,17 @@ export async function render(container) {
   function suggestPath(root) {
     const d = (draft.domains[0] || '').trim();
     if (root.trim() && root === autoPath) return `已按主域名自动填写，可手动修改：${root.trim()}`;
-    if (!root.trim() && d) return `建议路径：/www/wwwroot/${d}`;
-    if (!root.trim()) return '例如：/www/wwwroot/example.com';
+    if (!root.trim() && d) return `建议路径：${defaultRootParent}/${d}`;
+    if (!root.trim()) return `例如：${defaultRootParent}/example.com`;
     return `将挂载到：${root.trim()}`;
   }
 
-  // 主域名 → 默认根目录路径（/www/wwwroot/<主域名>）。
+  // 主域名 → 默认根目录路径（<默认父目录>/<主域名>）。
   // 规则与后端建站兜底一致：通配符 *.foo.com → _foo.com（service.go CreateSite）。
   function autoRootPath() {
     const d = (draft.domains[0] || '').trim();
     if (!d) return '';
-    return `/www/wwwroot/${d.replace(/^\*\./, '_')}`;
+    return `${defaultRootParent}/${d.replace(/^\*\./, '_')}`;
   }
 
   function switchFieldRow(label, checked, onChange) {

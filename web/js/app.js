@@ -84,6 +84,7 @@ const ROUTES = [
   { pattern: /^\/sites$/, key: 'sites', title: '网站', icon: 'sites', load: () => import('./views/sites.js') },
   { pattern: /^\/sites\/new$/, key: 'site-create', title: '新建站点', icon: 'sites', load: () => import('./views/site-create.js') },
   { pattern: /^\/sites\/([^\/]+)$/, key: 'site-detail', title: '站点详情', icon: 'sites', load: () => import('./views/site-detail.js') },
+  { pattern: /^\/databases$/, key: 'databases', title: '数据库', icon: 'database', load: () => import('./views/databases.js') },
   { pattern: /^\/certs$/, key: 'certs', title: '证书', icon: 'cert', load: () => import('./views/certs.js') },
   { pattern: /^\/cron$/, key: 'cron', title: '计划任务', icon: 'cron', load: () => import('./views/cron.js') },
   { pattern: /^\/backups$/, key: 'backups', title: '备份', icon: 'backup', load: () => import('./views/backups.js') },
@@ -99,6 +100,7 @@ const ROUTES = [
 const NAV = [
   { hash: '#/dashboard', label: '仪表盘', icon: 'dashboard', match: /^\/?$|^\/dashboard$|^\/sites\// },
   { hash: '#/sites', label: '网站', icon: 'sites', match: /^\/sites$/ },
+  { hash: '#/databases', label: '数据库', icon: 'database', match: /^\/databases$/ },
   { hash: '#/certs', label: '证书', icon: 'cert', match: /^\/certs$/ },
   { hash: '#/cron', label: '计划任务', icon: 'cron', match: /^\/cron$/ },
   { hash: '#/backups', label: '备份', icon: 'backup', match: /^\/backups$/ },

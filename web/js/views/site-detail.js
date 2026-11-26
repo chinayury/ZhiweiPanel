@@ -1,11 +1,11 @@
 // 站点详情：左侧标签页覆盖站点对象全部 17 组功能配置
 // 所有表单直接读写同一个站点对象，保存时整体 PUT /api/sites/:id
-import { api, formatDateTime, certDaysLeft } from '../api.js';
+import { api, formatDateTime, formatBytes, formatNumber, certDaysLeft } from '../api.js';
 import {
   h, clear, icon, button, tag, switchControl, switchField, field, textInput,
   numberInput, selectInput, textArea, checkboxField, loading,
   errorState, emptyState, toast, modal, codeBox, rowEditor,
-  stringListEditor, pillMultiSelect, grid, sectionTitle, tabPanel,
+  stringListEditor, pillMultiSelect, grid, sectionTitle, tabPanel, table,
   certDaysBadge, confirmDialog,
 } from '../components.js';
 import { ctx, store } from '../app.js';
@@ -618,6 +618,21 @@ export async function render(container, params) {
       ]);
     }
     // 注意：m.password 在 GET 路径上已经是 ""，由 api.go SanitizeForRead 脱敏。
+    async function resetDBPassword() {
+      const ok = await confirmDialog({
+        title: '重置数据库密码',
+        message: `将重置 ${m.name} 对应用户的密码，旧密码立即失效。使用该库的应用需要同步更新配置。`,
+        okText: '重置密码',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        const res = await api.databases.resetPassword(m.name);
+        showDatabasePassword(m.name, res && res.password);
+      } catch (e) {
+        toast('重置失败：' + (e.message || e), 'error', 5000);
+      }
+    }
     return h('div', {}, [
       sectionTitle('数据库连接信息'),
       grid(2,
@@ -632,9 +647,23 @@ export async function render(container, params) {
       h('div', { class: 'field-hint' },
         '密码不在此显示：创建时一次性明文已展示在弹窗中。如丢失，请重置。' +
         '删站点会联动 drop database + drop user。'),
+      sectionTitle('管理与备份'),
+      h('div', { class: 'inline-actions' }, [
+        button('打开数据库中心', () => ctx.navigate('#/databases'), 'default', 'database'),
+        button('重置密码', resetDBPassword, 'default', 'key'),
+        button('导出 .sql.gz', () => {
+          window.location.href = api.databases.exportURL(m.name);
+          toast('正在生成备份，稍后浏览器会开始下载', 'info', 3200);
+        }, 'ghost', 'download'),
+      ]),
       sectionTitle('高危操作'),
       button('删除该数据库（不可恢复）', async () => {
-        const yes = await confirmDialog('确认删除数据库', `真的要删 ${m.name} 吗？该操作会 drop database 和 drop user，且不可恢复。`);
+        const yes = await confirmDialog({
+          title: '确认删除数据库',
+          message: `真的要删 ${m.name} 吗？该操作会 drop database 和 drop user，且不可恢复。`,
+          okText: '删除',
+          danger: true,
+        });
         if (!yes) return;
         try {
           // 复用站点级删除：DELETE /api/sites/{id} 会联动删库。
@@ -819,6 +848,7 @@ export async function render(container, params) {
   function tabLogs() {
     const lg = site.logs;
     return h('div', {}, [
+      trafficStatsCard(),
       switchField('开启访问日志', lg.access_log, (v) => { lg.access_log = v; markDirty(); }),
       switchField('开启错误日志', lg.error_log, (v) => { lg.error_log = v; markDirty(); }),
       switchField('完全关闭日志', lg.disable_log, (v) => { lg.disable_log = v; markDirty(); }, '开启后访问日志与错误日志均不再写入'),
@@ -828,6 +858,50 @@ export async function render(container, params) {
       ),
       h('div', { class: 'inline-actions' }, button('前往日志查看', () => { sessionStorage.setItem('zhiweipanel.logs.site', site.id); ctx.navigate('#/logs'); }, 'ghost', 'logs')),
     ]);
+  }
+
+  // 近 7 日流量统计卡：v0.9.0 起增量采集，数据可信；精确状态码从本版本开始积累。
+  function trafficStatsCard() {
+    const box = h('div', { class: 'card-body' }, loading('加载流量统计…'));
+    const card = h('div', { class: 'card' }, [
+      h('div', { class: 'card-title' }, [
+        h('span', {}, '近 7 日流量统计'),
+        h('div', { class: 'card-title-extra' }, h('span', { class: 'field-hint' }, '按访问日志增量聚合')),
+      ]),
+      box,
+    ]);
+    api.sites.stats(site.id, 7).then((res) => {
+      clear(box);
+      const rows = (res && res.stats) || [];
+      if (!rows.length) {
+        box.appendChild(emptyState('暂无统计数据', null, 'logs'));
+        return;
+      }
+      box.appendChild(table([
+        { key: 'date', label: '日期', width: '120px' },
+        { label: '请求数', align: 'right', render: (r) => formatNumber(r.requests || 0) },
+        { label: '独立 IP', align: 'right', render: (r) => formatNumber(r.unique_ips || 0) },
+        { label: '流量', align: 'right', render: (r) => formatBytes(r.bytes || 0) },
+        { label: '2xx/3xx', align: 'right', render: (r) => `${formatNumber(r.status_2xx || 0)} / ${formatNumber(r.status_3xx || 0)}` },
+        { label: '4xx/5xx', align: 'right', render: (r) => `${formatNumber(r.status_4xx || 0)} / ${formatNumber(r.status_5xx || 0)}` },
+      ], rows));
+      const codes = (res && res.status_codes) || [];
+      if (codes.length) {
+        box.appendChild(h('div', { class: 'mini-list', style: { marginTop: '10px' } }, [
+          h('div', { class: 'field-hint' }, '精确状态码分布'),
+          h('div', { class: 'inline-actions' }, codes.map((c) => {
+            const code = Number(c.code) || 0;
+            const tone = code >= 500 ? 'danger' : code >= 400 ? 'warning' : code >= 300 ? 'info' : 'success';
+            return tag(`${code} × ${formatNumber(c.count || 0)}`, tone);
+          })),
+        ]));
+      }
+    }).catch((e) => {
+      clear(box).appendChild(errorState(`流量统计加载失败：${e.message || e}`, () => {
+        card.replaceWith(trafficStatsCard());
+      }));
+    });
+    return card;
   }
 
   // 16. 网站告警
@@ -989,5 +1063,46 @@ export async function render(container, params) {
     } catch (e) {
       clear(m.body).appendChild(errorState(`配置获取失败：${e.message || e}`));
     }
+  }
+}
+
+// 数据库改密后的一次性明文展示（离开弹窗即无法再次查看）。
+function showDatabasePassword(name, password) {
+  const m = modal({
+    title: '数据库密码已重置',
+    width: '520px',
+    content: h('div', {}, [
+      h('p', {}, `数据库：${name}`),
+      codeBox(password || '(空)', { maxHeight: '80px' }),
+      h('div', { class: 'field-hint' }, '明文只显示这一次。请立即更新应用配置或保存到密码管理器。'),
+    ]),
+    footer: [
+      button('复制密码', () => copyText(password || ''), 'default', 'key'),
+      button('我已保存', () => m.close(), 'primary', 'check'),
+    ],
+  });
+}
+
+async function copyText(text) {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      toast('已复制', 'success');
+      return;
+    }
+  } catch (e) { /* 回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    toast(ok ? '已复制' : '复制失败，请手动选择', ok ? 'success' : 'error');
+  } catch (e) {
+    toast('复制失败，请手动选择', 'error');
   }
 }

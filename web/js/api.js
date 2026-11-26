@@ -235,6 +235,21 @@ export const api = {
       // dest:   可选，目标目录（相对站点根）。空 = zip 父目录
       unzip: (id, zipRel, dest = '') =>
         http.post(`/sites/${encodeURIComponent(id)}/files/unzip`, { zip_path: zipRel, dest }),
+      // v0.9.0 文件管理 2.0
+      downloadURL: (id, path) =>
+        `/api/sites/${encodeURIComponent(id)}/files/download?path=${encodeURIComponent(path)}`,
+      search: (id, q, limit = 200) =>
+        http.get(`/sites/${encodeURIComponent(id)}/files/search?q=${encodeURIComponent(q)}&limit=${encodeURIComponent(limit)}`),
+      compress: (id, base, names, format) =>
+        http.post(`/sites/${encodeURIComponent(id)}/files/compress`, { base, names, format }),
+      extract: (id, archive, dest) =>
+        http.post(`/sites/${encodeURIComponent(id)}/files/extract`, { archive, dest }),
+      fetch: (id, url, path, filename) =>
+        http.post(`/sites/${encodeURIComponent(id)}/files/fetch`, { url, path, filename }),
+      removeBatch: (id, paths, recursive) =>
+        http.post(`/sites/${encodeURIComponent(id)}/files/delete-batch`, { paths, recursive }),
+      chmod: (id, path, mode) =>
+        http.post(`/sites/${encodeURIComponent(id)}/files/chmod`, { path, mode }),
     },
   },
 
@@ -291,6 +306,16 @@ export const api = {
     restorePreview: (id) => http.post(`/backups/${encodeURIComponent(id)}/restore`),
   },
 
+  // v0.9.0: 数据库中心（只管理 site_* 库）
+  databases: {
+    list: () => http.get('/databases'),
+    get: (name) => http.get(`/databases/${encodeURIComponent(name)}`),
+    resetPassword: (name) => http.post(`/databases/${encodeURIComponent(name)}/password`),
+    optimize: (name) => http.post(`/databases/${encodeURIComponent(name)}/optimize`),
+    import: (name, form) => http.post(`/databases/${encodeURIComponent(name)}/import`, form),
+    exportURL: (name) => `/api/databases/${encodeURIComponent(name)}/export`,
+  },
+
   // v0.2.0: 站点批量操作
   sitesBatch: (action, ids) => http.post('/sites/batch', { action, ids }),
 
@@ -301,6 +326,8 @@ export const api = {
   },
   system: {
     status: () => http.get('/system/status'),
+    // v0.9.0：面板自身运行参数（生效端口/绑定/安全入口/客户端 IP）。
+    info: () => http.get('/system/info'),
     // mysql MySQL/MariaDB 子系统状态探测（installed/running/version）。
     // 探测失败 → 返回 null（前端"是否显示建库选项"用这个判断）。
     mysql: () => http.get('/system/mysql').catch(() => null),
@@ -312,6 +339,8 @@ export const api = {
     // v0.7.0: 持久化的分钟级指标采样（重启不丢）。
     // 返回 {hours, interval_sec, history}，history 按旧 → 新排序。
     metricsHistory: (hours = 24) => http.get(`/system/metrics/history?hours=${encodeURIComponent(hours)}`),
+    // v0.9.0：清空流量统计（历史虚高数据），confirm 必须为 "RESET"。
+    resetTraffic: (confirm = 'RESET') => http.post('/system/traffic/reset', { confirm }),
     // v0.2.2: nginx 配置历史快照。
     configHistory: {
       list: () => http.get('/system/config-history'),

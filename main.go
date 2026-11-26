@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,8 +58,10 @@ var Version = version.Version
 func main() {
 	var (
 		port         = flag.Int("port", 8888, "面板 HTTPS 监听端口（启用 -tls 后）")
+		bindAddr     = flag.String("bind", "", "面板监听地址（空 = 所有网卡）。设置里的 panel_bind 优先于此参数")
 		httpRedirect = flag.Int("http-port", 8887, "HTTP 重定向端口（仅做 301 跳转 → HTTPS，0 表示禁用）")
 		tlsEnable    = flag.Bool("tls", false, "启用 HTTPS（自签证书自动生成到 dataDir）")
+		panelPath    = flag.String("panel-path", "", "强制覆盖设置中的面板安全入口（显式传空 = 清除入口，用于失联恢复）")
 		publicPort   = flag.Int("public-port", 0, "全局对外 HTTP 端口（0 = 用各站点自己的 listen_ports；非 0 = 所有站点都用这个端口，如 8080 用于整站搬迁到非标端口）")
 		disableIPv6  = flag.Bool("disable-ipv6", false, "关闭 v6 listen 指令（部分老机器没 IPv6，nginx -t 会报 emerg）")
 		tlsCert      = flag.String("tls-cert", "", "TLS 证书路径（留空则用 data/panel.crt）")
@@ -128,6 +132,19 @@ func main() {
 	// 早期 Version 常量与 settings 之间没有通路，版本号位置恒为空。
 	if err := db.SetSetting("version", Version); err != nil {
 		log.Printf("警告: 写入版本号到 settings 失败: %v", err)
+	}
+
+	// v0.9.0：面板自身监听参数现在以数据库设置为准，启动参数退回"初始默认值"。
+	// 历史部署（systemd/compose）都把 -port 写死在单元/命令里，若"显式参数优先"
+	// 则设置页永远改不动端口——这正是 v0.8.1 之前的缺陷。
+	listenPort, listenBind := resolvePanelListenSettings(db, *port, *bindAddr)
+	// -panel-path 是显式恢复开关：传了就以它覆盖数据库（显式传空 = 清除入口）。
+	if flagWasProvided("panel-path") {
+		if err := db.SetSetting("panel_path", *panelPath); err != nil {
+			log.Printf("警告: 写入面板安全入口失败: %v", err)
+		} else {
+			log.Printf("面板安全入口已被启动参数覆盖: %q", strings.Trim(*panelPath, "/"))
+		}
 	}
 
 	// 运行时驱动
@@ -317,17 +334,23 @@ func main() {
 	// secureCookie 必须与 TLS 状态联动：开了 HTTPS 才给 session cookie 加
 	// Secure 标志（Secure cookie 在纯 HTTP 下浏览器会拒绝写入 → 用户登不上）。
 	srv := api.NewServer(svc, *tlsEnable, splitAndTrim(*trustedProxy))
+	srv.SetPanelRuntime(listenPort, listenBind, *tlsEnable)
 	mux := srv.Routes()
 	mux.Handle("/ws/logs", authWS(srv, http.HandlerFunc(srv.HandleWebSocket)))
 	mux.Handle("/", staticHandler())
 
-	handler := securityHeaders(mux, *tlsEnable)
+	// 入口守卫包住整个 mux：静态资源、API、WS 都经过它。
+	// securityHeaders 放在最外层，保证被 403/404 的响应也带安全头。
+	handler := securityHeaders(srv.Guard(mux), *tlsEnable)
+	if p := srv.PanelPath(); p != "" {
+		log.Printf("面板安全入口已启用 → /%s/（根路径返回 404；API 保持 /api 不变）", p)
+	}
 	// 超时必须配齐：只有 ReadHeaderTimeout 时，慢速发送请求体或慢速
 	// 接收响应的连接会一直占着 fd 与 goroutine（Slowloris）。
 	// WriteTimeout 对 WebSocket 长连接不适用——升级后由 gorilla 自行管理，
 	// 因此这里只覆盖普通 HTTP 请求。
 	httpServer := &http.Server{
-		Addr:              fmt.Sprintf(":%d", *port),
+		Addr:              net.JoinHostPort(listenBind, strconv.Itoa(listenPort)),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -357,7 +380,7 @@ func main() {
 			MinVersion: tls.VersionTLS12,
 		}
 		go func() {
-			log.Printf("ZhiweiPanel %s HTTPS 已启动 → https://0.0.0.0:%d (SAN=%v)", Version, *port, hosts)
+			log.Printf("ZhiweiPanel %s HTTPS 已启动 → https://%s:%d (SAN=%v)", Version, listenDisplayHost(listenBind), listenPort, hosts)
 			if err := httpServer.ListenAndServeTLS(certPath, keyPath); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("HTTPS 服务启动失败: %v", err)
 			}
@@ -367,7 +390,7 @@ func main() {
 		// -http-port=0 → 不起（运维明确不要重定向的场景）。
 		if *httpRedirect > 0 {
 			redirSrv := &http.Server{
-				Addr: fmt.Sprintf(":%d", *httpRedirect),
+				Addr: net.JoinHostPort(listenBind, strconv.Itoa(*httpRedirect)),
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					// 用 r.Host 而不是仅靠 -port：用户可能绑了域名。
 					host := r.Host
@@ -375,8 +398,8 @@ func main() {
 						host = host[:i]
 					}
 					httpsURL := "https://" + host
-					if *port != 443 {
-						httpsURL += fmt.Sprintf(":%d", *port)
+					if listenPort != 443 {
+						httpsURL += fmt.Sprintf(":%d", listenPort)
 					}
 					httpsURL += r.URL.RequestURI()
 					// 308 永久：保留方法（POST 不会被改 GET）。缓存友好。
@@ -389,7 +412,7 @@ func main() {
 			}
 			httpSrvs = append(httpSrvs, redirSrv)
 			go func() {
-				log.Printf("ZhiweiPanel HTTP 重定向已启动 → http://0.0.0.0:%d (301→https://...:%d)", *httpRedirect, *port)
+				log.Printf("ZhiweiPanel HTTP 重定向已启动 → http://%s:%d (301→https://...:%d)", listenDisplayHost(listenBind), *httpRedirect, listenPort)
 				if err := redirSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					log.Printf("HTTP 重定向服务退出: %v", err)
 				}
@@ -397,7 +420,7 @@ func main() {
 		}
 	} else {
 		go func() {
-			log.Printf("ZhiweiPanel %s 已启动 → http://0.0.0.0:%d (未启用 TLS，登录凭据明文传输)", Version, *port)
+			log.Printf("ZhiweiPanel %s 已启动 → http://%s:%d (未启用 TLS，登录凭据明文传输)", Version, listenDisplayHost(listenBind), listenPort)
 			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("HTTP 服务启动失败: %v", err)
 			}
@@ -563,6 +586,8 @@ func runSessionCleaner(ctx context.Context, db *store.DB) {
 		case <-ticker.C:
 			_ = db.CleanSessions()
 			_ = db.CleanExpiredChallenges()
+			// v0.9.0：清理过期 UV/状态码明细；traffic_stats 日汇总长期保留。
+			_ = db.PruneTrafficExtra(time.Now().AddDate(0, 0, -90).Format("2006-01-02"))
 		}
 	}
 }
@@ -654,4 +679,60 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return out
+}
+
+// resolvePanelListenSettings 解析面板自身监听端口与绑定地址。
+//
+// v0.9.0 起数据库设置优先于启动参数：systemd 单元/Docker compose 都把
+// -port 写死，若坚持"参数优先"，设置页改端口永远不会生效。
+// 启动参数退化为"数据库没有设置时的初始默认值"。
+func resolvePanelListenSettings(db *store.DB, flagPort int, flagBind string) (int, string) {
+	port := flagPort
+	if v, err := db.GetSetting("panel_port"); err == nil && strings.TrimSpace(v) != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 && n <= 65535 {
+			if n != port {
+				log.Printf("面板设置 panel_port=%d 覆盖启动参数 -port=%d", n, port)
+			}
+			port = n
+		} else {
+			log.Printf("面板设置 panel_port=%q 非法，继续使用启动参数 %d", v, port)
+		}
+	}
+	bind := flagBind
+	if v, err := db.GetSetting("panel_bind"); err == nil {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			if net.ParseIP(v) == nil {
+				log.Printf("面板设置 panel_bind=%q 不是合法 IP，继续使用启动参数 %q", v, bind)
+			} else {
+				if v != bind {
+					log.Printf("面板设置 panel_bind=%s 覆盖启动参数 -bind=%q", v, bind)
+				}
+				bind = v
+			}
+		}
+	}
+	return port, bind
+}
+
+// flagWasProvided 判断某个启动参数是否被显式传入。
+//
+// flag.Visit 只遍历"命令行里出现过的"参数，这正是 -panel-path 需要的语义：
+// 默认值（空）表示交给数据库设置，显式传空才表示清除入口。
+func flagWasProvided(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// listenDisplayHost 把空绑定地址显示为 0.0.0.0，便于日志阅读。
+func listenDisplayHost(bind string) string {
+	if bind == "" {
+		return "0.0.0.0"
+	}
+	return bind
 }

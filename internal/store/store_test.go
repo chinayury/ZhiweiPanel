@@ -107,3 +107,24 @@ func TestListSitesCarriesTimestamps(t *testing.T) {
 		}
 	}
 }
+
+// 老库的 users.email 是 ALTER 补的 nullable 列，新用户没有邮箱时是 NULL。
+// 早期 GetUserProfile 直接 Scan 到 string，设置页会报
+// "converting NULL to string is unsupported" 并整页加载失败。
+func TestGetUserProfileNullEmail(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "profile.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SaveUser("admin", "hash", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := db.GetUserProfile("admin")
+	if err != nil {
+		t.Fatalf("GetUserProfile: %v", err)
+	}
+	if p.Email != "" || p.EmailVerified {
+		t.Fatalf("空邮箱应得零值，得到 %+v", p)
+	}
+}

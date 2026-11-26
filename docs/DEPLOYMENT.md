@@ -250,7 +250,9 @@ zhiweipanel \
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-port` | int | `8888` | 面板监听端口 |
+| `-port` | int | `8888` | 面板监听端口。数据库设置 `panel_port` 优先，未设置时用此值 |
+| `-bind` | string | 空 | 面板监听地址（空 = 所有网卡）。数据库设置 `panel_bind` 优先 |
+| `-panel-path` | string | 空 | 强制覆盖设置中的安全入口路径；显式传空 = 清除入口（忘记入口时自救） |
 | `-http-port` | int | `8887` | HTTP→HTTPS 301 重定向端口，`0` 禁用；**仅 `-tls` 开启时生效** |
 | `-tls` | bool | `false` | 启用面板 HTTPS（自签证书自动生成到 `<data>/panel.crt`） |
 | `-tls-cert` | string | 空 | TLS 证书路径，留空用 `<data>/panel.crt` |
@@ -262,7 +264,7 @@ zhiweipanel \
 | `-conf` | string | `/opt/zhiweipanel/nginx/conf.d` | nginx `conf.d` 目录 |
 | `-site-conf` | string | 空 | 站点 vhost 目录，留空同 `-conf` |
 | `-cert-dir` | string | 空 | 证书目录，留空用 `<data>/certs` |
-| `-backup-dir` | string | 空 | 备份目录，留空用 `<data>/backups`。**注意**：当前该参数只创建目录，备份文件实际落在 `<data>/backup/{site,database}/` |
+| `-backup-dir` | string | 空 | 备份根目录，留空用 `<data>/backup`。显式设置后新的备份写到 `<backup-dir>/{site,database}/`，已有备份记录不受影响 |
 | `-runtime` | string | `host` | `host` 或 `docker` |
 | `-nginx` | string | `nginx` | nginx 可执行文件 |
 | `-nginx-unit` | string | 空（= `nginx`） | nginx 的 systemd 服务名。nginx 由自定义单元托管时必须填（如 `aa_nginx`、`openresty`），否则状态页显示"未运行"，`systemctl reload` 也会打错单元（此时面板会退化为 `nginx -s reload` 信号重载，仍能生效） |
@@ -272,6 +274,11 @@ zhiweipanel \
 | `-admin-pass` | string | 空 | 初始管理员密码，**仅首次启动生效** |
 | `-version` | bool | `false` | 打印版本号后退出 |
 | `-trusted-proxy` | string | 空 | 受信反向代理网段（CIDR / 单 IP，逗号分隔）。直连方不在其中时一律用直连地址；留空 = 不信任任何代理 |
+
+> **v0.9.0 起 `-port` / `-bind` 的优先级变化**：数据库里保存的 `panel_port` / `panel_bind`
+> 覆盖启动参数，启动参数退化为"数据库没有设置时的初始默认值"。这样 systemd/Docker
+> 里写死的 `-port` 才不会让设置页的端口修改永远不生效。忘记安全入口时用
+> `-panel-path=<新路径>` 强制覆盖，或显式 `-panel-path=` 清除入口。
 
 推荐的最小生产参数组合：
 

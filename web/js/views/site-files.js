@@ -98,16 +98,28 @@ export function mountFilesView(parent, ctx) {
   // 每次切到该 tab 都重置到根目录：FM 工具的常见行为，避免
   // 切走再切回时带着陈旧 cwd 误操作。
   let cwd = '';
+  let entries = [];
+  const selected = new Set();
 
   // ---------- 顶部条 ----------
   const breadcrumb = h('div', { class: 'fm-breadcrumb' });
   const tbody = h('tbody');
+  const selectAll = h('input', {
+    type: 'checkbox',
+    title: '全选当前目录',
+    onchange: (e) => {
+      selected.clear();
+      if (e.target.checked) entries.forEach((x) => selected.add(x.name));
+      renderList(entries);
+    },
+  });
   const table = h('table', { class: 'fm-table' }, [
     h('thead', {}, h('tr', {}, [
+      h('th', { style: { width: '34px' } }, selectAll),
       h('th', {}, '名称'),
       h('th', { style: { width: '120px' } }, '大小'),
       h('th', { style: { width: '160px' } }, '修改时间'),
-      h('th', { style: { width: '180px' } }, '操作'),
+      h('th', { style: { width: '200px' } }, '操作'),
     ])),
     tbody,
   ]);
@@ -117,6 +129,13 @@ export function mountFilesView(parent, ctx) {
   const newFileBtn = button('新建文件', () => onNewFile(), 'default', 'plus');
   const newDirBtn = button('新建目录', () => onNewDir(), 'default', 'folder');
   const uploadBtn = button('上传', () => fileInput.click(), 'default', 'upload');
+  const fetchBtn = button('远程下载', onFetch, 'default', 'download');
+  const compressBtn = button('压缩', onCompress, 'default', 'backup');
+  const extractBtn = button('解压', onExtract, 'default', 'folder');
+  const downloadBtn = button('下载', onDownload, 'default', 'download');
+  const batchDeleteBtn = button('删除选中', onBatchDelete, 'danger', 'trash');
+  const chmodBtn = button('权限', onChmod, 'default', 'key');
+  const searchBtn = button('搜索', onSearch, 'default', 'search');
 
   // 隐藏的 file input：multiple 支持多选
   const fileInput = h('input', {
@@ -137,7 +156,10 @@ export function mountFilesView(parent, ctx) {
 
   const header = h('div', { class: 'fm-toolbar' }, [
     breadcrumb,
-    h('div', { class: 'fm-toolbar-right' }, [uploadBtn, newFileBtn, newDirBtn, refreshBtn]),
+    h('div', { class: 'fm-toolbar-right' }, [
+      uploadBtn, newFileBtn, newDirBtn, fetchBtn, searchBtn,
+      compressBtn, extractBtn, downloadBtn, chmodBtn, batchDeleteBtn, refreshBtn,
+    ]),
   ]);
   const body = h('div', { class: 'fm-body' }, [listArea, dropzone, progressBox]);
   clear(parent).appendChild(h('div', { class: 'fm-root' }, [header, body, fileInput]));
@@ -160,14 +182,28 @@ export function mountFilesView(parent, ctx) {
   }
 
   // ---------- 渲染：列表 ----------
-  function renderList(entries) {
+  function renderList(list) {
     clear(tbody);
-    if (!entries || entries.length === 0) {
-      tbody.appendChild(h('tr', {}, h('td', { colspan: 4, class: 'fm-empty' }, '（空目录）')));
+    selectAll.checked = list.length > 0 && selected.size === list.length;
+    selectAll.indeterminate = selected.size > 0 && selected.size < list.length;
+    if (!list || list.length === 0) {
+      tbody.appendChild(h('tr', {}, h('td', { colspan: 5, class: 'fm-empty' }, '（空目录）')));
+      updateActionState();
       return;
     }
-    for (const e of entries) {
+    for (const e of list) {
       const isDir = e.type === 'dir';
+      const checkbox = h('input', {
+        type: 'checkbox',
+        checked: selected.has(e.name),
+        onchange: (ev) => {
+          if (ev.target.checked) selected.add(e.name);
+          else selected.delete(e.name);
+          selectAll.checked = selected.size === list.length;
+          selectAll.indeterminate = selected.size > 0 && selected.size < list.length;
+          updateActionState();
+        },
+      });
       const nameCell = h('td', { class: 'fm-name' }, [
         h('span', { class: `fm-icon fm-icon-${e.type}` }, isDir ? '📁' : '📄'),
         h('a', {
@@ -178,6 +214,7 @@ export function mountFilesView(parent, ctx) {
             else onOpen(e);
           },
         }, e.name),
+        h('span', { class: 'fm-mode' }, e.mode || ''),
       ]);
       const actions = h('td', { class: 'fm-actions' }, [
         !isDir && looksTextual(e.name, e.size)
@@ -187,12 +224,32 @@ export function mountFilesView(parent, ctx) {
         button('删除', () => onDelete(e), 'danger', 'trash'),
       ]);
       tbody.appendChild(h('tr', {}, [
+        h('td', { class: 'fm-check' }, checkbox),
         nameCell,
         h('td', { class: 'fm-size' }, isDir ? '-' : formatSize(e.size)),
         h('td', { class: 'fm-mtime' }, formatMTime(e.mtime)),
         actions,
       ]));
     }
+    updateActionState();
+  }
+
+  function selectedEntries() {
+    return entries.filter((e) => selected.has(e.name));
+  }
+
+  function isArchiveName(name) {
+    return /\.(zip|tar|tgz|tar\.gz)$/i.test(String(name || ''));
+  }
+
+  function updateActionState() {
+    const n = selected.size;
+    const sel = selectedEntries();
+    compressBtn.disabled = n === 0;
+    extractBtn.disabled = n !== 1 || !isArchiveName(sel[0] && sel[0].name);
+    downloadBtn.disabled = n !== 1 || !!(sel[0] && sel[0].type === 'dir');
+    batchDeleteBtn.disabled = n === 0;
+    chmodBtn.disabled = n !== 1;
   }
 
   // ---------- 拖拽上传 ----------
@@ -282,16 +339,20 @@ export function mountFilesView(parent, ctx) {
   // ---------- 加载 ----------
   async function load(p) {
     cwd = p || '';
+    selected.clear();
     renderBreadcrumb();
     clear(listArea);
     listArea.appendChild(loading('正在加载…'));
     try {
       const res = await api.sites.files.list(siteId, cwd);
-      renderList(res.entries || []);
+      entries = res.entries || [];
+      selected.clear();
+      renderList(entries);
       // 重新挂回（loading 已被清掉）
       clear(listArea);
       listArea.appendChild(table);
     } catch (e) {
+      entries = [];
       clear(listArea).appendChild(errorState(`加载失败：${e.message || e}`, () => load(cwd)));
     }
   }
@@ -458,6 +519,200 @@ export function mountFilesView(parent, ctx) {
       if (hint) hint.textContent = dirtyRef.v ? '● 未保存' : '';
     });
     setTimeout(() => ta.focus(), 50);
+  }
+
+  // ---------- v0.9.0：压缩 / 解压 / 下载 / 批量删除 / 权限 / 远程下载 / 搜索 ----------
+  async function onCompress() {
+    const sel = selectedEntries();
+    if (sel.length === 0) return;
+    const raw = await promptModal({
+      title: `压缩 ${sel.length} 个选中项`,
+      label: '格式（zip 或 tar.gz）',
+      initial: 'zip',
+    });
+    if (raw === null) return;
+    const format = raw.toLowerCase().includes('tar') ? 'tar.gz' : 'zip';
+    try {
+      const res = await api.sites.files.compress(
+        siteId, cwd, sel.map((e) => joinPath(cwd, e.name)), format,
+      );
+      toast(`已生成 ${res.path}`, 'success', 4200);
+      await load(cwd);
+    } catch (e) {
+      toast('压缩失败：' + (e.message || e), 'error', 5200);
+    }
+  }
+
+  async function onExtract() {
+    const sel = selectedEntries();
+    if (sel.length !== 1) return;
+    const e = sel[0];
+    const dest = await promptModal({
+      title: `解压 ${e.name}`,
+      label: '目标目录（相对站点根；留空 = 压缩包所在目录）',
+      initial: cwd || '.',
+    });
+    if (dest === null) return;
+    try {
+      const r = await api.sites.files.extract(siteId, joinPath(cwd, e.name), dest);
+      toast(`已解压 ${r.extracted} 个条目`, 'success', 3600);
+      await load(cwd);
+    } catch (err) {
+      toast('解压失败：' + (err.message || err), 'error', 5200);
+    }
+  }
+
+  function onDownload() {
+    const sel = selectedEntries();
+    if (sel.length !== 1 || sel[0].type === 'dir') return;
+    window.location.href = api.sites.files.downloadURL(siteId, joinPath(cwd, sel[0].name));
+  }
+
+  async function onBatchDelete() {
+    const sel = selectedEntries();
+    if (sel.length === 0) return;
+    const hasDir = sel.some((e) => e.type === 'dir');
+    const ok = await confirmDialog({
+      title: '批量删除',
+      message: `将删除 ${sel.length} 个选中项${hasDir ? '；目录会连同内部内容递归删除' : ''}。此操作不可恢复。`,
+      okText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const r = await api.sites.files.removeBatch(
+        siteId, sel.map((e) => joinPath(cwd, e.name)), hasDir,
+      );
+      toast(`已删除 ${r.deleted} 项`, 'success');
+      await load(cwd);
+    } catch (e) {
+      toast('删除失败：' + (e.message || e), 'error', 5200);
+    }
+  }
+
+  async function onChmod() {
+    const sel = selectedEntries();
+    if (sel.length !== 1) return;
+    const e = sel[0];
+    const mode = await promptModal({
+      title: `修改权限：${e.name}`,
+      label: '八进制权限（如 644 / 0755）',
+      initial: e.mode || '0644',
+    });
+    if (mode === null) return;
+    try {
+      await api.sites.files.chmod(siteId, joinPath(cwd, e.name), mode);
+      toast('权限已修改', 'success');
+      await load(cwd);
+    } catch (err) {
+      toast('修改失败：' + (err.message || err), 'error', 4200);
+    }
+  }
+
+  function onFetch() {
+    const urlInp = textInput('', null, { placeholder: 'https://example.com/file.tar.gz' });
+    urlInp.style.width = '100%';
+    const nameInp = textInput('', null, { placeholder: '留空使用 URL 文件名' });
+    nameInp.style.width = '100%';
+    const err = h('div', { class: 'login-error', style: { display: 'none' } });
+    let m;
+    const run = async () => {
+      err.style.display = 'none';
+      const u = urlInp.value.trim();
+      if (!u) {
+        err.textContent = '请输入下载地址';
+        err.style.display = 'block';
+        return;
+      }
+      try {
+        const r = await api.sites.files.fetch(siteId, u, cwd, nameInp.value.trim());
+        m.close();
+        toast(`已下载到 ${r.path}（${formatSize(r.bytes)}）`, 'success', 4200);
+        await load(cwd);
+      } catch (e) {
+        err.textContent = e.message || '下载失败';
+        err.style.display = 'block';
+      }
+    };
+    m = modal({
+      title: '远程下载到当前目录',
+      width: '560px',
+      content: h('div', {}, [
+        h('div', { class: 'fm-prompt-label' }, '下载地址（仅 http/https）'),
+        urlInp,
+        h('div', { class: 'fm-prompt-label' }, '保存文件名（可选）'),
+        nameInp,
+        h('div', { class: 'field-hint' }, '上限 100MB、60 秒；拒绝回环/链路本地/云元数据地址；目标文件已存在时不覆盖。'),
+        err,
+      ]),
+      footer: h('div', { class: 'fm-editor-footer' }, [
+        button('取消', () => m.close(), 'default', 'close'),
+        button('开始下载', run, 'primary', 'download'),
+      ]),
+    });
+    setTimeout(() => urlInp.focus(), 30);
+  }
+
+  function onSearch() {
+    const inp = textInput('', null, { placeholder: '输入文件名关键字，回车搜索' });
+    inp.style.width = '100%';
+    const results = h('div', { class: 'fm-search-results mini-list' });
+    let m;
+    const run = async () => {
+      const kw = inp.value.trim();
+      if (!kw) return;
+      clear(results).appendChild(loading('搜索中…'));
+      try {
+        const r = await api.sites.files.search(siteId, kw, 200);
+        clear(results);
+        const list = r.entries || [];
+        if (list.length === 0) {
+          results.appendChild(emptyState('没有匹配项', null, 'search'));
+          return;
+        }
+        for (const e of list) {
+          results.appendChild(h('div', { class: 'mini-item' }, [
+            h('span', { class: 'fm-icon' }, e.type === 'dir' ? '📁' : '📄'),
+            h('a', {
+              href: '#',
+              onclick: (ev) => {
+                ev.preventDefault();
+                m.close();
+                if (e.type === 'dir') {
+                  load(e.path);
+                } else {
+                  const dir = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
+                  load(dir).then(() => onOpen({ name: e.name, size: e.size, type: 'file' }));
+                }
+              },
+            }, e.path),
+            h('span', { class: 'mini-item-meta' }, e.type === 'dir' ? '目录' : formatSize(e.size)),
+          ]));
+        }
+      } catch (err) {
+        clear(results).appendChild(errorState(err.message || '搜索失败'));
+      }
+    };
+    inp.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        run();
+      }
+    });
+    m = modal({
+      title: '搜索文件',
+      width: '680px',
+      content: h('div', {}, [
+        inp,
+        h('div', { class: 'field-hint' }, '最多返回 200 条；跳过站点 logs 与 .well-known。'),
+        results,
+      ]),
+      footer: [
+        button('关闭', () => m.close(), 'default', 'close'),
+        button('搜索', run, 'primary', 'search'),
+      ],
+    });
+    setTimeout(() => inp.focus(), 30);
   }
 
   // 初始加载

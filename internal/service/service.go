@@ -567,6 +567,12 @@ func (s *Service) CreateSite(ctx context.Context, site *model.Site) (*model.Site
 	// 这些值会被原样写进 nginx 配置文本，非法值要么改变配置语义，
 	// 要么让 nginx -t 失败进而拖垮所有站点的配置下发。
 	// 必须在落库前拦住，并把出错字段精确告诉用户。
+	if site.PHP.Enabled && strings.TrimSpace(site.PHP.Version) == "" {
+		// 设置页的 default_php_version 真正接线：API 调用方不传版本时用它。
+		if v, err := s.db.GetSetting("default_php_version"); err == nil && strings.TrimSpace(v) != "" {
+			site.PHP.Version = strings.TrimSpace(v)
+		}
+	}
 	if err := model.ValidateSite(site); err != nil {
 		return nil, err
 	}
@@ -597,7 +603,15 @@ func (s *Service) CreateSite(ctx context.Context, site *model.Site) (*model.Site
 	// 此处恒重新生成，确保落库的 ID 一定是服务端产生的十六进制串。
 	site.ID = store.NewID()
 	if site.Root.Path == "" && len(site.Domains) > 0 {
-		site.Root.Path = "/www/wwwroot/" + strings.ReplaceAll(site.Domains[0], "*.", "_")
+		// 设置页的 default_site_root 真正接线：默认 /www/wwwroot，
+		// 用户可以在设置里改成 /data/www 之类的父目录。
+		defaultRoot := "/www/wwwroot"
+		if v, err := s.db.GetSetting("default_site_root"); err == nil {
+			if v = strings.TrimRight(strings.TrimSpace(v), "/"); v != "" {
+				defaultRoot = v
+			}
+		}
+		site.Root.Path = defaultRoot + "/" + strings.ReplaceAll(site.Domains[0], "*.", "_")
 	}
 	if err := validateSitePaths(site); err != nil {
 		return nil, err
@@ -652,6 +666,12 @@ func (s *Service) CreateSite(ctx context.Context, site *model.Site) (*model.Site
 	// 文件不存在 → nginx -t 失败 → 整批配置回滚。
 	if err := s.syncAccessFile(site); err != nil {
 		return nil, err
+	}
+	// v0.9.0：给新站点预置流量采集 checkpoint（offset=0）。
+	// 不预置的话，"首次采集从文件末尾开始"的防重复策略会漏掉建站后
+	// 到首轮采集（最多 5 分钟）之间的访问。
+	if err := s.db.PrimeTrafficOffset(site.ID, filepath.Join(site.Root.Path, "logs", "access.log")); err != nil {
+		log.Printf("站点 %s 预置流量采集点失败（不影响建站）: %v", site.Name, err)
 	}
 	// 配置下发失败不回滚站点数据：
 	// 生产环境中 nginx 可能尚未就绪或配置有误，此时用户仍应能把站点建起来、
@@ -828,6 +848,11 @@ func (s *Service) DeleteSite(ctx context.Context, id string) error {
 	}
 	if err := s.db.DeleteSite(id); err != nil {
 		return err
+	}
+	// v0.9.0：站点删除后清理其流量统计/UV/状态码/采集 checkpoint。
+	// 失败不回滚删站；只是留下无主统计行（site_id 不再复用，不会被误读）。
+	if err := s.db.DeleteTrafficSite(id); err != nil {
+		log.Printf("[site/delete] 清理流量统计失败: site=%s err=%v", id, err)
 	}
 	// 已有备份不随删站连坐删除：备份记录与文件独立于站点存活，
 	// 用户可以下载/恢复（站点没了备份还在是备份的本意）。
@@ -1006,17 +1031,31 @@ func (s *Service) SiteConfig(ctx context.Context, id string) (nginx.RenderResult
 	return res, ok, msg, nil
 }
 
-// CollectTraffic 汇总站点访问日志到统计表。
+// CollectTraffic 增量采集站点访问日志到统计表。
+//
+// v0.9.0 之前这里每 5 分钟调用 ReadAndAggregate 重读末尾 50k 行，
+// SaveTrafficStat 又做累加——同一批日志被反复计入，统计只会虚高。
+// 现在按 checkpoint 只读新增行，统计/IP/状态码/checkpoint 同事务提交。
 func (s *Service) CollectTraffic(site *model.Site) error {
-	if !site.Logs.AccessLog {
+	if site == nil || !site.Logs.AccessLog || site.Root.Path == "" {
 		return nil
 	}
 	logPath := filepath.Join(site.Root.Path, "logs", "access.log")
-	stat, err := logmgr.ReadAndAggregate(logPath, site.ID)
-	if err != nil || stat == nil {
+	prev, err := s.db.GetTrafficOffset(site.ID)
+	if err != nil {
 		return err
 	}
-	return s.db.SaveTrafficStat(stat)
+	batch, err := logmgr.ReadIncremental(logPath, site.ID, prev)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if batch.StartedAtEnd && prev == nil {
+		log.Printf("流量采集：站点 %s 首次启用增量采集，从日志末尾起步（历史虚高数据可在运维中心重置）", site.Name)
+	}
+	return s.db.ApplyTrafficBatch(batch)
 }
 
 // EstablishBaseline 建立防篡改基线（防复改）。

@@ -112,6 +112,43 @@ CREATE TABLE IF NOT EXISTS traffic_stats (
     unique_ips INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (date, site_id)
 );
+CREATE INDEX IF NOT EXISTS idx_traffic_stats_site_date ON traffic_stats(site_id, date);
+
+-- v0.9.0: 访问日志增量采集 checkpoint。
+-- v0.8.1 及以前每 5 分钟重读末尾 50k 行并累加，同一批日志被反复计入，
+-- 统计只会虚高；本表记录"读到哪个字节"，每次只处理新增行。
+-- dev/ino 用于识别日志轮转（Linux）；Windows/不支持的平台为 0，退化为
+-- "文件变小即视为截断"的判定。
+CREATE TABLE IF NOT EXISTS traffic_log_offsets (
+    site_id    TEXT PRIMARY KEY,
+    path       TEXT NOT NULL,
+    dev        INTEGER NOT NULL DEFAULT 0,
+    ino        INTEGER NOT NULL DEFAULT 0,
+    offset     INTEGER NOT NULL DEFAULT 0,
+    sample     TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP
+);
+
+-- v0.9.0: 每日独立 IP（真 UV）。
+-- 旧实现的 unique_ips 只是"单批末尾 50k 行里的去重数"，且每批覆盖，
+-- 不是日 UV。这里按 (日期, 站点, IP) 落行，跨批次/跨重启去重。
+CREATE TABLE IF NOT EXISTS traffic_ips (
+    date    TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    ip      TEXT NOT NULL,
+    PRIMARY KEY (date, site_id, ip)
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_ips_site_date ON traffic_ips(site_id, date);
+
+-- v0.9.0: 精确状态码分布（旧表只有 2xx/3xx/4xx/5xx 四桶）。
+CREATE TABLE IF NOT EXISTS traffic_status (
+    date    TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    code    INTEGER NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (date, site_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_status_site_date ON traffic_status(site_id, date);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -708,6 +745,31 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
 
+// SetSettings 在一个事务里写入多个设置。
+//
+// 与逐个 SetSetting 的区别：设置页一次提交多个键，中途失败时
+// 不应留下"端口已改、安全入口没改"的半套配置——尤其面板安全相关的键，
+// 部分生效比完全不生效更难排查。
+func (d *DB) SetSettings(kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	for k, v := range kv {
+		if _, err := tx.Exec(`INSERT INTO settings (key,value) VALUES (?,?)
+ON CONFLICT(key) DO UPDATE SET value=excluded.value`, k, v); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // GetSetting 读取单个设置。
 func (d *DB) GetSetting(key string) (string, error) {
 	var v string
@@ -829,16 +891,19 @@ type UserProfile struct {
 func (d *DB) GetUserProfile(username string) (*UserProfile, error) {
 	p := &UserProfile{Username: username}
 	var ev int
-	var ip, ua sql.NullString
+	var email, ip, ua sql.NullString
 	var loginAt, createdAt sql.NullTime
 	err := d.db.QueryRow(`SELECT email, email_verified, last_login_ip, last_login_ua,
 		last_login_at, created_at FROM users WHERE username=?`, username).
-		Scan(&p.Email, &ev, &ip, &ua, &loginAt, &createdAt)
+		Scan(&email, &ev, &ip, &ua, &loginAt, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, model.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if email.Valid {
+		p.Email = email.String
 	}
 	if ip.Valid {
 		p.LastLoginIP = ip.String

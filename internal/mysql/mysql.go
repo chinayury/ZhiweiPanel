@@ -306,6 +306,34 @@ var reservedUsers = map[string]bool{
 	"system": true, "mariadb": true, "debian-sys-maint": true,
 }
 
+// SetUserPassword 直接修改已存在用户的密码（ALTER USER）。
+//
+// 不能复用 CreateUser：MariaDB/MySQL 的 `CREATE USER IF NOT EXISTS` 对
+// 已存在用户只发 warning、不改密码，函数会误以为成功。重置密码必须走
+// ALTER USER，才能保证新旧密码真的切换。
+func (c *Client) SetUserPassword(ctx context.Context, user, password, host string) error {
+	if c == nil || c.DB == nil {
+		return ErrNotInstalled
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	if host != "localhost" && host != "127.0.0.1" {
+		return fmt.Errorf("仅支持 host=localhost（拒绝 %q 以缩小暴露面）", host)
+	}
+	if err := checkUserName(user); err != nil {
+		return err
+	}
+	if len(password) < 16 {
+		return fmt.Errorf("密码过短（至少 16 位）")
+	}
+	stmt := buildAlterUserStmt(user, host, password)
+	if _, err := c.DB.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("ALTER USER (重置密码): %w", err)
+	}
+	return nil
+}
+
 // checkUserName 校验用户名可安全用于建用户/删用户。
 func checkUserName(user string) error {
 	if user == "" {

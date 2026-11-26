@@ -36,6 +36,53 @@
 
 ---
 
+## v0.9.0 — 平台级整体优化（面板安全入口 / 文件管理 2.0 / 数据库中心 / 流量统计准确化）（2026-11-25）
+
+- 增量流量采集分段读取超长日志行，遇到完整换行后继续统计后续请求。
+
+**定位**：minor。借鉴宝塔面板补齐平台级高频能力，并修掉两处「已承诺但没兑现」的缺陷。无破坏性 API 变更：`/api` 与 `/ws` 路径保持不变。
+
+### 新增
+
+| 项 | 说明 |
+|----|------|
+| **面板访问安全** | 设置 → 面板访问安全：安全入口路径（随机生成，旧路径立即 404）、IP/CIDR 白名单（回环始终放行）、面板端口与绑定地址。安全入口只遮蔽浏览器 UI，API/WS 仍走 `/api`、`/ws`，既有 Token/CI/健康检查不受影响 |
+| **防自锁** | 保存 IP 白名单时服务端用真实客户端 IP 校验，会被自己挡住则 400 拒绝；忘记入口可用 `-panel-path=<新路径>` 启动参数强制覆盖恢复 |
+| **文件管理 2.0** | zip / tar.gz 压缩；zip / tar / tar.gz 解压（复用 zip-slip / symlink / 条目数 / 字节数全部防护）；单文件下载；远程 URL 下载（100MB、60s、拒绝回环/链路本地/云元数据）；批量删除（目录递归需显式确认）；chmod；递归搜索 |
+| **数据库中心** | 新导航「数据库」：列出 `site_*` 库（大小/表数/字符集/站点映射）；重置密码（一次性明文）；mysqldump 导出 `.sql.gz`；`.sql/.sql.gz` 导入；OPTIMIZE TABLE；复制连接信息 |
+| **流量统计准确化** | 日志偏移 checkpoint 增量采集；首次采集从文件尾起步；按日志时间按日拆分；`traffic_ips` 真 UV；`traffic_status` 精确状态码；站点详情与仪表盘展示状态码明细 |
+| **流量统计 reset** | 设置页「流量统计维护」可显式清空历史虚高数据（确认词 RESET）；清空后下一轮从日志末尾重新准确统计 |
+
+### 修复
+
+| 项 | 说明 |
+|----|------|
+| **流量统计重复累加** | v0.8.1 及以前每 5 分钟重读最近 50k 行并 `requests=requests+...`，同一批日志被反复计入；UV 也只是单批去重数且被覆盖。现在只读 offset 之后的新增行，统计/IP/状态码/checkpoint 同事务提交 |
+| **面板设置存了不生效** | `panel_port` / `panel_path` 此前只写 settings 表，`main.go` 从不读取。现在端口/绑定启动时生效（重启后），入口路径由请求守卫实时生效 |
+| **默认站点根目录 / PHP 版本未接线** | 设置页两个默认项现在真正用于建站向导与 `CreateSite` |
+| **设置保存无谓 reload** | 保存任何设置都会触发全量 nginx 下发；现在只有安全设置刷新入口守卫，不再无意义 reload |
+| **设置页账户加载失败** | 旧库 `users.email` 是 ALTER 补的 nullable 列，未绑邮箱时为 NULL；`GetUserProfile` 直接 Scan 到 string 报 `converting NULL to string is unsupported`，导致设置页整页中断。改用 `sql.NullString` 接住 |
+| **设置页两步验证卡片永远"加载中"** | v0.8.x 只定义了 `draw2FA()` 却没有在初始化时调用，开启/关闭按钮不出现。已补初始调用 |
+| **站点数据库页 confirmDialog 参数错误** | 旧调用把标题/正文当字符串传入对象参数，删除确认弹窗实际不可用；已修正 |
+
+### 兼容性说明
+
+- **无破坏性 API 变更**：`/api/*`、`/ws/*` 路径不变；安全入口只影响浏览器 UI 的路径前缀。
+- **面板端口/绑定**：数据库设置优先于启动参数（systemd/Docker 里写死的 `-port` 会退化为初始默认值）；修改后需重启面板。Docker 部署还需同步 compose 端口映射。
+- **历史流量数字**：旧数据不会自动重算，升级后新采集准确；需要干净起点请在设置页执行「清空统计」。
+- **数据库中心**：只管理面板自己创建的 `site_*` 库；系统库（mysql/sys/performance_schema）在任何动作前即被拒绝。Docker 镜像未内置 MySQL 客户端时，改密/优化可用，导入/导出会明确报错。
+- **远程下载**：允许私网地址（内网镜像常见），拒绝回环、链路本地、云元数据地址；这是有意的 SSRF 边界，仍建议只对可信 URL 使用。
+
+### 实现
+
+- 面板安全：`internal/api/panel_guard.go`、`internal/api/misc.go`、`internal/api/server.go`、`main.go`、`web/js/views/settings.js`。
+- 文件管理：`internal/service/file_archive.go`、`internal/service/file_ops.go`、`internal/api/files.go`、`web/js/views/site-files.js`。
+- 数据库中心：`internal/mysql/databases.go`、`internal/service/databases.go`、`internal/api/databases.go`、`web/js/views/databases.js`。
+- 流量统计：`internal/logmgr/incremental.go`、`internal/store/traffic.go`、`internal/model/traffic.go`、`web/js/views/dashboard.js`、`web/js/views/site-detail.js`。
+- 测试：`panel_guard_test.go`、`traffic_test.go`（api/store/service）、`incremental_test.go`、`file_ops_test.go`、`databases_test.go`。
+
+---
+
 ## v0.8.1 — 安全加固：恢复码登录邮件提醒（2026-11-26）
 
 **定位**：安全增强（v0.8.0 恢复码的配套）。无破坏性变更；未绑邮箱或未配 SMTP 时行为与 v0.8.0 完全一致（只记日志）。

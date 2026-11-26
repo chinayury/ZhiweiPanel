@@ -61,7 +61,9 @@ var ErrIsDirectory = model.ErrBadRequest
 
 // FileEntry 文件浏览器一项。
 type FileEntry struct {
-	Name  string    `json:"name"`
+	Name string `json:"name"`
+	// Path 是站点相对路径（搜索结果的完整路径；普通列表为空）。
+	Path  string    `json:"path,omitempty"`
 	Type  string    `json:"type"` // "file" | "dir" | "symlink"
 	Size  int64     `json:"size"`
 	MTime time.Time `json:"mtime"`

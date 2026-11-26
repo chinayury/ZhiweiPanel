@@ -104,13 +104,15 @@ export async function render(container) {
     // 拉取各站点 stats 并按日期聚合
     const targets = sites.slice(0, 30); // 防止站点过多时并发过大
     let dayAgg = null;
+    let codeAgg = null;
     try {
       const statsLists = await Promise.all(
         targets.map((s) => api.sites.stats(s.id, 7).catch(() => ({ stats: [] })))
       );
       dayAgg = new Map();
-      for (const { stats } of statsLists) {
-        for (const row of stats || []) {
+      codeAgg = new Map();
+      for (const item of statsLists) {
+        for (const row of item.stats || []) {
           const cur = dayAgg.get(row.date) || { date: row.date, requests: 0, bytes: 0, status_2xx: 0, status_3xx: 0, status_4xx: 0, status_5xx: 0 };
           cur.requests += Number(row.requests) || 0;
           cur.bytes += Number(row.bytes) || 0;
@@ -119,6 +121,12 @@ export async function render(container) {
           cur.status_4xx += Number(row.status_4xx) || 0;
           cur.status_5xx += Number(row.status_5xx) || 0;
           dayAgg.set(row.date, cur);
+        }
+        // v0.9.0：精确状态码（按站点接口返回的 status_codes 汇总）。
+        for (const c of item.status_codes || []) {
+          const code = Number(c.code) || 0;
+          if (!code) continue;
+          codeAgg.set(code, (codeAgg.get(code) || 0) + (Number(c.count) || 0));
         }
       }
     } catch (e) {
@@ -181,6 +189,26 @@ export async function render(container) {
         ],
         { height: 200 }
       ));
+      // 精确状态码（v0.9.0 起采集）。历史日期没有明细，展示提示而不是空白。
+      const codes = Array.from((codeAgg || new Map()).entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6);
+      if (codes.length) {
+        codeBody.appendChild(h('div', { class: 'field-hint', style: { marginTop: '10px' } }, '精确状态码（升级后开始采集）'));
+        const list = h('div', { class: 'mini-list' });
+        for (const [code, count] of codes) {
+          const tone = code >= 500 ? 'danger' : code >= 400 ? 'warning' : code >= 300 ? 'info' : 'success';
+          const label = code >= 500 ? '服务端错误' : code >= 400 ? '客户端错误' : code >= 300 ? '重定向' : '成功';
+          list.appendChild(h('div', { class: 'mini-item' }, [
+            h('span', { class: 'mini-item-name' }, String(code)),
+            h('span', { class: 'mini-item-meta' }, `${formatNumber(count)} 次`),
+            tag(label, tone),
+          ]));
+        }
+        codeBody.appendChild(list);
+      } else {
+        codeBody.appendChild(h('div', { class: 'field-hint', style: { marginTop: '8px' } }, '精确状态码从 v0.9.0 起采集；历史日期仅有四类汇总。'));
+      }
     }
 
     // ---------------- 站点状态 + 证书临期 + 最近告警 ----------------

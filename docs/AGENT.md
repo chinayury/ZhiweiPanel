@@ -59,7 +59,16 @@ curl -X POST https://<panel-host>:8888/api/tokens \
 | `/api/backups/{id}/restore` | POST | 只返回恢复预览，不会直接覆盖线上配置 |
 | `/api/system/config-apply` | POST | 手动触发全量配置下发 |
 | `/api/system/config-history/{id}/restore` | POST | 回滚 nginx 配置（不回滚数据库，见第 5 节） |
+| `/api/system/traffic/reset` | POST | **清空全部流量统计与采集 checkpoint**。body 必须 `{"confirm":"RESET"}`；不可撤销 |
 | `/api/tokens` | POST / DELETE | 创建 / 吊销 Token |
+| `/api/databases/{name}/password` | POST | 重置 `site_*` 库用户密码，响应含一次性明文；系统库 404 |
+| `/api/databases/{name}/optimize` | POST | `OPTIMIZE TABLE` 库内全部表（可能锁表，timeout 10 分钟） |
+| `/api/databases/{name}/import` | POST | multipart `file=`.sql/.sql.gz，解压后 ≤100MB；宿主机需有 `mysql` 客户端 |
+| `/api/sites/{id}/files/compress` | POST | `{base, names[], format:"zip"|"tar.gz"}`，压缩当前目录下选中项 |
+| `/api/sites/{id}/files/extract` | POST | `{archive, dest}`，支持 zip/tar/tar.gz |
+| `/api/sites/{id}/files/fetch` | POST | `{url, path, filename}` 远程下载（仅 http/https，≤100MB，拒回环/链路本地/元数据） |
+| `/api/sites/{id}/files/delete-batch` | POST | `{paths[], recursive}`；递归删除目录必须显式 `recursive:true` |
+| `/api/sites/{id}/files/chmod` | POST | `{path, mode}`，八进制 0~0777 |
 
 ## 4. 只读端点（read scope 即可）
 
@@ -69,6 +78,8 @@ curl -X POST https://<panel-host>:8888/api/tokens \
 `GET /api/audit-logs/export?format=csv|json`（下载文件；**导出本身会留痕**
 `audit.export`——把审计日志带走的动作与改配置同等敏感，agent 不要在无人
 确认时批量导出）、`GET /api/alerts`、`GET /api/backups`、`GET /api/cron/jobs`、
+`GET /api/databases`（只返回 `site_*` 库）、`GET /api/databases/{name}/export`（下载 `.sql.gz`）、
+`GET /api/sites/{id}/files/search?q=`、`GET /api/sites/{id}/files/download?path=`、
 `GET /api/2fa/status`（两步验证状态 + `recovery_remaining` 恢复码余量）、`GET /api/auth/me`（恒 200，用
 `authenticated` 字段区分登录态——**4xx 才是错误**）。
 
@@ -89,11 +100,22 @@ curl -X POST https://<panel-host>:8888/api/tokens \
    自动化脚本不要用密码登录循环试错，用 Token。
 8. **容器部署形态**：面板与 nginx 同容器（`-runtime=host`），nginx 由镜像入口脚本拉起。
    容器里没有 systemd，`systemctl` 类探测必然失败属正常现象。
+9. **安全入口只影响浏览器 UI**：设置 `panel_path` 后 `/` 返回 404、UI 资源移到
+   `/<panel_path>/`；`/api` 与 `/ws` **始终不带前缀**，Token/CI/健康检查照旧。
+   IP 白名单对全部路径生效，回环地址始终放行（SSH 隧道自救）。
+10. **面板安全设置仅限浏览器会话**：`panel_path` / `panel_ip_allowlist` / `panel_port` /
+    `panel_bind` 用 API Token 修改一律 403——防止泄漏的 write Token 把管理员锁在门外。
+11. **流量统计是增量采集**：`traffic_stats` 从 v0.9.0 起按日志偏移累加，不会重复；
+    v0.8.1 及以前的历史数字偏高，需要干净起点时调用 `/api/system/traffic/reset`
+    （确认词 RESET），之后下一轮从当前日志末尾开始。
+12. **数据库操作只碰 `site_*`**：`mysql`/`sys`/`performance_schema` 在进入 SQL 前即 404；
+    导入/导出依赖宿主机的 `mysql`/`mysqldump` 客户端。
 
 ## 6. Agent 行为红线（建议直接写进 agent 系统提示）
 
 - **不要**在没有人工确认的情况下调用：删站、改写基线、恢复配置、创建 shell Token、
-  执行 Shell 计划任务。这五类操作要么不可逆、要么等于交出 root。
+  执行 Shell 计划任务、清空流量统计（`/api/system/traffic/reset`）、递归批量删文件、
+  SQL 导入。这些操作要么不可逆、要么等于交出 root 或改写数据。
 - **不要**把 Token 明文写进日志、提示词或对话历史；用完即弃的 Token 用短有效期。
 - **不要**用「多试几次」应对 4xx：401/403/400 分别是未认证/无权限/参数错，重试无意义。
 - **先读后写**：改站点前先 `GET /api/sites/{id}` 拿当前定义，做最小字段修改后 PUT 回去；

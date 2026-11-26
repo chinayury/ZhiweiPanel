@@ -1,8 +1,8 @@
 # 智维面板 ZhiweiPanel
 
-**轻量级自托管建站面板 · v0.8.1**
+**轻量级自托管建站面板 · v0.9.0**
 
-智维面板（ZhiweiPanel）把"建站面板"这件事收敛到**网站管理本身**：域名、网站目录、SSL、PHP、限流、防盗链、防篡改、日志、告警、计划任务、备份。刻意不做宝塔那套周边（FTP、容器编排、面板市场），把功能面收窄到能一次交付、长期维护得住的规模——软件商店也只做「已安装检测 + 安装命令提示」的只读目录，不自动安装/卸载任何东西。
+智维面板（ZhiweiPanel）把"建站面板"这件事收敛到**网站管理本身**：域名、网站目录、文件管理、SSL、PHP、限流、防盗链、防篡改、日志、告警、计划任务、备份、数据库，以及面板自身的安全入口/IP 白名单。刻意不做宝塔那套周边（FTP、容器编排、面板市场），把功能面收窄到能一次交付、长期维护得住的规模——软件商店也只做「已安装检测 + 安装命令提示」的只读目录，不自动安装/卸载任何东西。
 
 - **单二进制**：`CGO_ENABLED=0` 静态编译，前端资源用 `go:embed` 内嵌进可执行文件。`scp` 到服务器 `chmod +x` 即可运行，不需要 Go 运行时，也不需要额外部署数据库服务（数据落在 SQLite，纯 Go 驱动，无 cgo）。
 - **两种运行时**：宿主机模式（systemd 管 nginx）与 Docker 模式，差异收敛在 `driver.Driver` 一个接口后面，业务逻辑完全复用。
@@ -17,7 +17,7 @@
 | # | 功能 | 能配什么 | 落地的 nginx 配置 |
 |---|------|----------|------------------|
 | 1 | 基本信息 | 多域名、根目录、运行用户/组、运行目录 `run_path`、符号链接开关、自定义 404、对外监听端口、站点到期时间、备注 | `server_name` / `root` / `error_page 404` |
-| 2 | 文件管理 | 浏览、上传、编辑、新建、重命名、删除、在线解压 zip | — |
+| 2 | 文件管理 | 浏览、上传、编辑、新建、重命名、删除、下载、压缩 zip/tar.gz、解压 zip/tar/tar.gz、远程 URL 下载、批量删除、chmod、递归搜索 | — |
 | 3 | 子目录绑定 | 把 `/blog` 这类 URL 前缀映射到独立磁盘目录 | `location /blog/ { alias ... }` |
 | 4 | 访问限制 | IP 黑白名单、HTTP 方法白名单、**HTTP Basic Auth 访问认证** | `allow` / `deny` / `limit_except` / `auth_basic` |
 | 5 | 流量限制 | 单连接限速、单 IP 请求频率、月流量配额、超额强制执行 | `limit_rate` / `limit_req_zone` |
@@ -26,7 +26,7 @@
 | 8 | 配置文件 | 自定义 nginx 片段，原样注入 server 块 | 原文注入 |
 | 9 | SSL | 证书绑定、强制 HTTPS、HSTS、TLS 协议版本、OCSP stapling、HTTP/2 | `ssl_*` / HSTS 头 |
 | 10 | PHP | 版本切换、PHP-FPM socket、执行时间、内存限制、禁用函数、自定义 php.ini | `fastcgi_pass` |
-| 11 | 数据库 | MySQL/MariaDB 联动建库 + 建用户 + 授权，删站联动 drop | — |
+| 11 | 数据库 | MySQL/MariaDB 联动建库 + 建用户 + 授权，删站联动 drop；全局「数据库」页支持列表/改密/导出/导入/优化 | — |
 | 12 | 重定向 | 301/302/303/307/308 规则 | `return 301/302/...` |
 | 13 | 反向代理 | 多上游、路径前缀、WebSocket、SNI、超时、缓存 | `proxy_pass` |
 | 14 | 防盗链 | 来源域名白名单 + 受保护扩展名 + 触发状态码 | `valid_referers` / `$invalid_referer` |
@@ -41,6 +41,9 @@
 | 功能 | 说明 |
 |------|------|
 | 证书管理 | Let's Encrypt 签发（HTTP-01 / DNS-01），DNS 提供商内置阿里云 / DNSPod / 腾讯云 / Cloudflare；自动续签、ACME 账户管理、导入外部证书、证书与站点批量绑定 |
+| 面板访问安全 | 安全入口路径（随机生成，旧地址立即 404）、IP/CIDR 白名单（回环自救）、面板端口与绑定地址；安全设置仅浏览器会话可改，保存前用真实客户端 IP 防自锁 |
+| 数据库中心 | 全局 `site_*` 库列表（大小/表数/字符集/站点映射）；重置密码（一次性明文）、mysqldump 导出 `.sql.gz`、SQL 导入、OPTIMIZE TABLE、连接信息复制；系统库一律拒绝 |
+| 流量统计 | 日志偏移增量采集（不重复累加）、按日拆分、真 UV、精确状态码分布；支持显式清空历史虚高数据 |
 | 计划任务 | 6 种任务类型（Shell 脚本 / 备份站点 / 备份数据库 / 切割访问日志 / 释放内存 / 访问 URL），5 段 crontab 表达式，执行历史留档，失败自动通知 |
 | 备份 | 站点备份（tar.gz，含渲染好的 nginx conf）与数据库备份（mysqldump + gzip），支持下载、恢复预览、保留份数裁剪 |
 | 站点批量操作 | 列表多选后批量启动 / 停止 |
@@ -115,7 +118,9 @@ docker compose logs -f
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `-port` | int | `8888` | 面板监听端口。启用 `-tls` 时是 HTTPS 端口，未启用时是 HTTP 端口 |
+| `-port` | int | `8888` | 面板监听端口。数据库设置 `panel_port` 优先；未设置时用此值。启用 `-tls` 时是 HTTPS 端口 |
+| `-bind` | string | 空 | 面板监听地址（空 = 所有网卡）。数据库设置 `panel_bind` 优先。修改后需重启 |
+| `-panel-path` | string | 空 | 强制覆盖设置中的面板安全入口路径（显式传空 = 清除入口），用于忘记入口时的自救 |
 | `-http-port` | int | `8887` | HTTP→HTTPS 301 重定向端口，`0` 表示禁用。**仅在 `-tls` 开启时才生效**（未启用 TLS 时不会起这个 listener） |
 | `-tls` | bool | `false` | 启用 HTTPS。自签证书不存在时自动生成到 `<data>/panel.crt` + `<data>/panel.key` |
 | `-tls-cert` | string | 空 | 指定 TLS 证书路径；留空则用 `<data>/panel.crt` |
@@ -359,7 +364,7 @@ internal/
   tlsgen/                   自签证书生成
   apps/                     软件商店静态目录（安装检测在 service 层）
 web/                        前端：原生 ES Module，无 npm、无构建步骤
-  js/views/                 13 个页面视图（仪表盘/站点/软件商店/证书/计划任务/备份/日志/告警/运维/设置…）
+  js/views/                 14 个页面视图（仪表盘/站点/数据库/软件商店/证书/计划任务/备份/日志/告警/运维/设置…）
 deploy/                     Dockerfile / docker-compose.yml / zhiweipanel.service / install.sh
 docs/                       部署、使用、变更、安全与审计文档
 ```
@@ -448,6 +453,7 @@ type Driver interface {
 | [docs/OPTIMIZATION-v0.1.0.md](docs/OPTIMIZATION-v0.1.0.md) | 本轮功能优化与新增日志 |
 | [docs/SECURITY-v0.1.0.md](docs/SECURITY-v0.1.0.md) | 安全审查报告 |
 | [docs/BT-COMPARE-v0.2.0.md](docs/BT-COMPARE-v0.2.0.md) | 与宝塔面板的差异分析 |
+| [docs/RESEARCH-BORROW-v0.9.0.md](docs/RESEARCH-BORROW-v0.9.0.md) | v0.9.0 借鉴宝塔平台能力的来源、设计与边界 |
 | [docs/RESEARCH-BORROW-v0.2.2.md](docs/RESEARCH-BORROW-v0.2.2.md) | 同类项目借鉴要点清单 |
 | [docs/audit/](docs/audit/) | 4 份审计原始报告（本轮修复的缺陷来源） |
 
@@ -462,10 +468,10 @@ type Driver interface {
 | `go build ./...` | ✅ 通过（Go 1.26.10） |
 | `go vet ./...` | ✅ 零告警 |
 | `gofmt -l .` | ✅ 零输出 |
-| `go test ./...` | ✅ 全部通过：212 个测试函数（17 个包全绿），0 FAIL |
+| `go test ./...` | ✅ 全部通过：293 个测试函数（19 个包全绿），0 FAIL |
 | `govulncheck ./...` | ✅ `Your code is affected by 0 vulnerabilities`（须用与构建一致的 go1.26.10 工具链编译扫描器，见 [安全报告 §3.7](docs/SECURITY-v0.1.0.md)） |
 | 依赖升级 | Go `1.26.10`；`github.com/go-acme/lego/v4` `v4.25.2` → `v4.35.2`（修 GO-2026-5593 Webroot 路径穿越任意文件写）；零新增依赖 |
-| 代码规模 | 103 个 `.go` 文件 / 21203 行；15 个前端 ES Module / 6139 行；39 个测试文件 / 212 个测试函数 |
+| 代码规模 | 151 个 `.go` 文件 / 28023 行；17 个前端 ES Module / 7424 行；64 个测试文件 / 293 个测试函数 |
 | 线上端到端 | ✅ 35 项对抗用例全过、0 失败（生产机真实 nginx + 真实站点） |
 
 > 测试与扫描在开发机（Windows）上执行。面板本身的生产形态是 Linux，宿主机相关的用例（`/proc` 采样、logrotate 式日志切割）在 Linux 上才有意义。
@@ -489,3 +495,8 @@ type Driver interface {
 11. **`-http-port` 只在 `-tls` 开启时生效**。纯 HTTP 模式下不会起 301 重定向 listener。
 12. **数据库密码只能重置、不能查看**。创建时一次性明文回显，之后任何读路径都拿不到明文。
 13. **告警类型是固定枚举**（`status_5xx` / `traffic_quota` / `cert_expiry` / `site_down` / `tamper` / `nginx_config` / `config_drift`），前端下拉由后端 `GET /api/alert-types` 动态下发，新增类型必须同时改后端检查器。
+14. **安全入口只遮蔽浏览器 UI**。`/api` 与 `/ws` 保持无前缀（兼容既有 API Token、CI 与 Docker HEALTHCHECK）；入口路径是遮挡，不是认证。
+15. **远程下载允许私网地址**。只拒绝回环、链路本地（含云元数据 169.254.169.254）与组播地址；内网镜像/对象存储可用，但仍不要用它抓取不可信 URL。
+16. **数据库中心只管理 `site_*` 库**。系统库在任何动作前即被拒绝；Docker 镜像未内置 `mysql`/`mysqldump` 客户端时，导入/导出会给出明确错误（宿主机安装 MariaDB 客户端即可）。
+17. **历史流量数字不会自动重算**。v0.8.1 及以前的重复累加导致历史值偏高；v0.9.0 起新采集准确，需要干净起点可在设置页执行「清空统计」。
+18. **文件压缩/解压有硬上限**。压缩 2GB 原始字节 / 2 万条目；解压 500MB / 5000 条目 / 单文件 100MB。超出直接报错，不做自动分卷。
