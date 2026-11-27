@@ -63,7 +63,7 @@ bash deploy/install.sh
 | `PANEL_PORT` | `8888` | 面板端口 |
 | `INSTALL_DIR` | `/opt/zhiweipanel` | 安装目录 |
 | `INSTALL_PHP` | `1` | 是否安装 PHP-FPM；`0` 跳过 |
-| `PHP_VERSION` | `8.1` | PHP 版本（Debian 11 自带版本；其它发行版需自行换源） |
+| `PHP_VERSION` | `8.1` | 首选 PHP 版本。安装失败时回退到发行版默认包，并启动对应的 PHP-FPM 服务。Debian 11 默认提供 PHP 7.4。 |
 | `INSTALL_MYSQL` | `1` | 是否安装 MariaDB；`0` 跳过 |
 | `MYSQL_ROOT_PASS` | 空则自动生成 | MariaDB root 密码。留空则生成 24 位随机 hex 写入 `${INSTALL_DIR}/data/mysql-root.cnf`（权限 0600） |
 

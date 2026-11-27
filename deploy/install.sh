@@ -12,7 +12,7 @@
 #   PANEL_USER      管理员用户名，默认 admin
 #   INSTALL_DIR     安装目录，默认 /opt/zhiweipanel
 #   INSTALL_PHP     是否安装 PHP-FPM，默认 1（PHP_VERSION 控制版本）
-#   PHP_VERSION     PHP 版本，默认 8.1（Debian 11 自带；其他发行版要换源）
+#   PHP_VERSION     PHP 首选版本，默认 8.1；安装失败时使用发行版默认包
 #   INSTALL_MYSQL   是否安装 MariaDB，默认 1
 #   MYSQL_ROOT_PASS MariaDB root 密码；留空则生成 24 位随机串并写入
 #                   ${INSTALL_DIR}/data/mysql-root.cnf（权限 0600）
@@ -142,15 +142,28 @@ fi
 
 # ---------- 1.5 安装 PHP-FPM ----------
 if [[ "$INSTALL_PHP" == "1" ]]; then
-    if ! command -v php-fpm${PHP_VERSION} &>/dev/null && ! command -v php-fpm &>/dev/null; then
+    php_fpm_package="php${PHP_VERSION}-fpm"
+    if command -v "php-fpm${PHP_VERSION}" &>/dev/null; then
+        info "PHP-FPM 已安装: $("php-fpm${PHP_VERSION}" -v)"
+    elif command -v php-fpm &>/dev/null; then
+        php_fpm_package=php-fpm
+        info "PHP-FPM 已安装: $(php-fpm -v)"
+    else
         info "未检测到 PHP-FPM，正在安装 PHP ${PHP_VERSION}…"
         case "$PKG" in
             apt)
                 export DEBIAN_FRONTEND=noninteractive
-                # Debian/Ubuntu 的 phpX.Y-fpm 包名； Sury 源外发行版要换 PPA
                 apt-get install -y -qq "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-curl" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" "php${PHP_VERSION}-bcmath" "php${PHP_VERSION}-intl" || {
                     warn "指定 PHP ${PHP_VERSION} 安装失败，回退默认 php-fpm（不绑版本）"
                     apt-get install -y -qq php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd php-bcmath php-intl
+                    # 默认包依赖具体版本。只选择此依赖，避免启用并存的其他版本。
+                    php_fpm_depends=$(dpkg-query -W -f='${Depends}' php-fpm 2>/dev/null || true)
+                    if [[ "$php_fpm_depends" =~ ^(php[0-9]+\.[0-9]+-fpm)([[:space:]]*\([^\)]*\))?$ ]]; then
+                        php_fpm_package="${BASH_REMATCH[1]}"
+                    else
+                        php_fpm_package=""
+                        warn "无法从默认包依赖确定 PHP-FPM 服务，请手动检查"
+                    fi
                 }
                 # Debian 把 socket 建在 /run/php/，可能有 php-fpm.sock 软链，
                 # 也可能有 phpX.Y-fpm.sock 具体名——让面板去探测，不要 hardcode。
@@ -159,27 +172,30 @@ if [[ "$INSTALL_PHP" == "1" ]]; then
                 $PKG install -y -q "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mysqlnd" "php${PHP_VERSION}-cli" || {
                     warn "指定 PHP ${PHP_VERSION} 安装失败，回退默认 php-fpm"
                     $PKG install -y -q php-fpm php-mysqlnd php-cli
+                    php_fpm_package=php-fpm
                 }
                 ;;
             *)
                 warn "未识别的包管理器，跳过 PHP 安装"
+                php_fpm_package=""
                 ;;
         esac
-        info "PHP 安装完成"
-    else
-        info "PHP-FPM 已安装: $(php-fpm${PHP_VERSION} -v 2>/dev/null || php-fpm -v 2>/dev/null | head -1)"
     fi
-    # 让 systemd 开机自启 + 立即启动（不启动的话面板 PHP 站点 502）
-    for unit in "php${PHP_VERSION}-fpm" "php-fpm" "php${PHP_VERSION}-fpm.service"; do
-        if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "${unit}.service"; then
-            systemctl enable --now "${unit}.service" >/dev/null 2>&1 || true
-            info "已启用 ${unit}.service"
-            break
+    php_fpm_unit=""
+    if [[ -n "$php_fpm_package" ]]; then
+        php_fpm_unit="${php_fpm_package}.service"
+        if [[ "$PKG" == dnf || "$PKG" == yum ]]; then
+            php_fpm_unit=$(rpm -q --whatprovides "$php_fpm_package" --list |
+                sed -nE 's|^.*/systemd/system/([^/]*fpm\.service)$|\1|p' | sort -u) || php_fpm_unit=""
         fi
-    done
-    # 如果以上都没匹配上，最后兜底：找 /run/php 下的 socket
-    if ! systemctl is-active --quiet "php${PHP_VERSION}-fpm" 2>/dev/null && ! ls /run/php/*.sock &>/dev/null; then
-        warn "PHP-FPM 似乎没起来：/run/php 下无 socket。后续建站时面板会探测并提示"
+        if [[ -z "$php_fpm_unit" || "$php_fpm_unit" == *$'\n'* ]]; then
+            php_fpm_unit=""
+            warn "无法确定 $php_fpm_package 对应的 systemd 服务，请手动检查 PHP-FPM"
+        elif systemctl enable --now "$php_fpm_unit" && systemctl is-active --quiet "$php_fpm_unit"; then
+            info "已启用并启动 $php_fpm_unit"
+        else
+            warn "$php_fpm_unit 启用或启动失败，请运行 systemctl status $php_fpm_unit 检查"
+        fi
     fi
 else
     info "跳过 PHP 安装（INSTALL_PHP=0）"
@@ -398,13 +414,8 @@ echo "  数据目录   : ${INSTALL_DIR}/data"
 echo
 echo "  组件状态   :"
 echo "    nginx       : $(systemctl is-active nginx 2>/dev/null || echo inactive) / $(nginx -v 2>&1 | head -1 || echo '?')"
-if [[ "$INSTALL_PHP" == "1" ]]; then
-    for unit in "php${PHP_VERSION}-fpm" "php-fpm"; do
-        if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "${unit}.service"; then
-            echo "    PHP-FPM     : $(systemctl is-active "${unit}" 2>/dev/null) / $(php-fpm${PHP_VERSION} -v 2>/dev/null | head -1 || php-fpm -v 2>/dev/null | head -1 || echo '?')"
-            break
-        fi
-    done
+if [[ "$INSTALL_PHP" == "1" && -n "${php_fpm_unit:-}" ]]; then
+    echo "    PHP-FPM     : $(systemctl is-active "$php_fpm_unit") / $php_fpm_unit"
 fi
 if [[ "$INSTALL_MYSQL" == "1" ]]; then
     for unit in mariadb mysql mysqld; do
