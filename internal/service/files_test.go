@@ -214,6 +214,41 @@ func TestEnsureDefaultIndexEmptyRootOnly(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultIndexConfiguredFiles(t *testing.T) {
+	s := newFileTestService(t)
+	for _, tt := range []struct {
+		name       string
+		configured []string
+		existing   string
+		wantPage   bool
+	}{
+		{"configured homepage exists", []string{"index.html", "home.html"}, "home.html", false},
+		{"custom list excludes welcome page", []string{"home.html"}, "", false},
+		{"welcome page is a fallback", []string{"home.html", "index.html"}, "", true},
+		{"existing standard homepage", []string{"index.html", "home.html"}, "index.htm", false},
+		{"legacy list has no valid names", []string{"/home", "$lang.html"}, "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			site := fileTestSite(root)
+			site.Index.Files = tt.configured
+			if tt.existing != "" {
+				if err := os.WriteFile(filepath.Join(root, tt.existing), []byte("site content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.EnsureDefaultIndex(site)
+			_, err := os.Stat(filepath.Join(root, "index.html"))
+			if tt.wantPage && err != nil {
+				t.Fatalf("expected welcome page: %v", err)
+			}
+			if !tt.wantPage && !os.IsNotExist(err) {
+				t.Fatalf("expected no welcome page, stat returned %v", err)
+			}
+		})
+	}
+}
+
 // 在 t.TempDir() 构造一个 zip，返回路径。
 func writeTestZip(t *testing.T, files map[string]string) string {
 	t.Helper()

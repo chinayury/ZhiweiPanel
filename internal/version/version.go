@@ -106,7 +106,7 @@ package version
 //
 // ⚠️ 改版本号时只改这里一处，然后跑 `go test ./internal/version/`，
 // 门禁会告诉你还有哪些锚点需要同步。
-const Version = "0.9.3"
+const Version = "0.9.4"
 
 // History 已经发布过的历史版本号。
 //
@@ -145,6 +145,7 @@ var History = []string{
 	"0.9.0",
 	"0.9.1",
 	"0.9.2",
+	"0.9.3",
 }
 
 // All 返回当前版本与全部历史版本号。

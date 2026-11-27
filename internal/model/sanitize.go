@@ -53,9 +53,7 @@ func SanitizeSite(s *Site) *Site {
 	out.ListenPorts = sanitizePorts(s.ListenPorts)
 
 	// ---- 默认文档 ----
-	out.Index.Files = sanitizeList(s.Index.Files, 16, func(v string) (string, bool) {
-		return v, NginxSafeIdentifier(v)
-	})
+	out.Index.Files = s.Index.SanitizedFiles()
 
 	// ---- 访问控制 ----
 	out.Access.Allow = sanitizeList(s.Access.Allow, 256, func(v string) (string, bool) {
@@ -298,6 +296,13 @@ func SanitizeSite(s *Site) *Site {
 // ---------------------------------------------------------------------------
 // 净化辅助
 // ---------------------------------------------------------------------------
+
+// SanitizedFiles 返回可以写入 nginx index 指令的默认文档名，保留配置顺序。
+func (c IndexConf) SanitizedFiles() []string {
+	return sanitizeList(c.Files, 16, func(v string) (string, bool) {
+		return v, NginxSafeIdentifier(v)
+	})
+}
 
 // sanitizeList 逐项净化列表：先按 fn 变换，再按 ok 判定过滤，最后截断到 max 条。
 //

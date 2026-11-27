@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"text/template"
 	"time"
@@ -31,26 +32,24 @@ var defaultIndexTmpl = template.Must(template.ParseFS(defaultIndexFS, "templates
 // 命中任一则跳过模板写入，尊重用户内容。
 var indexNames = []string{"index.html", "index.htm", "index.php"}
 
-// EnsureDefaultIndex 在站点 root 为空（或没放首页）时写入默认欢迎页。
-//
-// 触发条件：
-//   - root 目录不存在任何 index.{html,htm,php}
-//   - root 目录为空
-//
-// 不覆盖用户已有内容；调用者应在 CreateSite / 配置更新等时机调一次。
-//
-// 写入失败不视为致命错误：日志告警即可，不阻塞站点创建。
+// EnsureDefaultIndex 在站点使用 index.html 且尚无首页时创建欢迎页。
 func (s *Service) EnsureDefaultIndex(site *model.Site) {
 	if site.Root.Path == "" {
 		return
 	}
-	// 1) 已存在 index 文件 → 不动
-	for _, name := range indexNames {
-		if _, err := os.Stat(filepath.Join(site.Root.Path, name)); err == nil {
+	configured := site.Index.SanitizedFiles()
+	if len(configured) > 0 && !slices.Contains(configured, "index.html") {
+		return
+	}
+	// 兼顾原有的常见首页和站点配置的首页。保留已有目录项（包括符号链接）。
+	for _, name := range slices.Concat(indexNames, configured) {
+		if name == "." || !filepath.IsLocal(name) {
+			return
+		}
+		if _, err := os.Lstat(filepath.Join(site.Root.Path, name)); !os.IsNotExist(err) {
 			return
 		}
 	}
-	// 2) 渲染并写
 	data := map[string]any{
 		"Name":      site.Name,
 		"Domain":    firstDomain(site),
@@ -64,13 +63,24 @@ func (s *Service) EnsureDefaultIndex(site *model.Site) {
 		return
 	}
 	dst := filepath.Join(site.Root.Path, "index.html")
-	if err := os.WriteFile(dst, buf.Bytes(), 0o644); err != nil {
-		log.Printf("[zhiweipanel] write default index failed: %v", err)
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if os.IsExist(err) {
 		return
+	}
+	if err != nil {
+		log.Printf("[zhiweipanel] create default index failed: %v", err)
+		return
+	}
+	_, err = f.Write(buf.Bytes())
+	if err != nil {
+		log.Printf("[zhiweipanel] write default index failed: %v", err)
 	}
 	// chown 到 root.user / root.group，让 nginx worker（通常 www-data）能读
 	if site.Root.User != "" && site.Root.Group != "" {
-		_ = os.Chown(dst, userID(site.Root.User), groupID(site.Root.Group))
+		_ = f.Chown(userID(site.Root.User), groupID(site.Root.Group))
+	}
+	if err := f.Close(); err != nil {
+		log.Printf("[zhiweipanel] close default index failed: %v", err)
 	}
 }
 
