@@ -1,6 +1,9 @@
 package mysql
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +11,38 @@ import (
 
 	"github.com/zhiwei/panel/internal/model"
 )
+
+func TestQuoteGrantDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{
+		{"ON", "`site_example_db`"},
+		{"OFF", "`site\\_example\\_db`"},
+	} {
+		got, err := quoteGrantDatabase("site_example_db", tc.mode)
+		if err != nil || got != tc.want {
+			t.Errorf("partial_revokes=%s: got %q, %v; want %q", tc.mode, got, err, tc.want)
+		}
+	}
+	if _, err := quoteGrantDatabase("site_example_db", ""); err == nil {
+		t.Error("缺少有效的 partial_revokes 值时应停止授权")
+	}
+}
+
+func TestGrantPrivilegesPropagatesModeQueryError(t *testing.T) {
+	db, err := sql.Open("mysql", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = (&Client{DB: db}).GrantPrivileges(ctx, "site_example", "site_example", "localhost")
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "partial_revokes") {
+		t.Fatalf("期望查询授权模式时返回取消错误，得到 %v", err)
+	}
+}
 
 // TestLoadRootDSN 锁死 cnf 解析格式：
 // install.sh 写出的凭据文件必须能被 LoadRootDSN 正确读出 user/password/socket。

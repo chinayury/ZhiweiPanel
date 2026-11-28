@@ -32,7 +32,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -o /out/zhiweipanel .
 
 # ---------- 运行阶段 ----------
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache nginx ca-certificates tzdata curl \
     && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \

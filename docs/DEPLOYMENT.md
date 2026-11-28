@@ -233,7 +233,7 @@ zhiweipanel \
 
 ### 3.3 Docker 模式的注意点
 
-- 镜像基于 `alpine:3.20`，内置 nginx + ca-certificates + tzdata + curl，时区固定为 `Asia/Shanghai`。
+- 镜像基于 `alpine:3.24`，内置 nginx + ca-certificates + tzdata + curl，时区固定为 `Asia/Shanghai`。
 - **入口脚本会先拉起容器内的 nginx，再启动面板**（`deploy/docker-entrypoint.sh`）。面板只负责「下发配置 → `nginx -t` → reload」，从不 start nginx；容器里也没有 systemd，没有这个入口镜像内就没有 nginx 进程，首屏配置下发会直接报 `invalid PID number "" in "/run/nginx/nginx.pid"`。
 - 镜像内置了 `deploy/nginx.conf`：面板的 `conf.d` include 被放在 `http {}` **内**。alpine 默认把它放在 root context，而面板下发的配置里既有 http 级指令（`log_format` / `limit_req_zone`）也有 server 块，直接挂载会报 `"log_format" directive is not allowed here`。同时把 pid 路径显式固定为 `/run/nginx/nginx.pid`。**不要**把 `nginx.conf` 放进 `nginx-conf` 卷——该卷挂载在 `/etc/nginx/conf.d`，不会覆盖主配置。
 - 发行版自带的 `http.d/default.conf`（`:80` 上的 `default_server`）已在镜像构建阶段删除，否则会与面板下发的 catch-all 冲突（重复定义 default server）。

@@ -286,6 +286,19 @@ func quoteIdent(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
+// quoteGrantDatabase 按服务端的库级 GRANT 匹配规则引用库名。
+func quoteGrantDatabase(db, partialRevokes string) (string, error) {
+	switch partialRevokes {
+	case "ON":
+		return quoteIdent(db), nil
+	case "OFF":
+		pattern := strings.NewReplacer(`\`, `\\`, "_", `\_`, "%", `\%`).Replace(db)
+		return quoteIdent(pattern), nil
+	default:
+		return "", fmt.Errorf("未知的 MySQL partial_revokes 值 %q", partialRevokes)
+	}
+}
+
 // quoteLiteral 把字符串写成 MySQL 的单引号字面量。
 //
 // 转义规则：反斜杠写成两个，单引号写成两个（”）。
@@ -404,10 +417,22 @@ func (c *Client) GrantPrivileges(ctx context.Context, user, db, host string) err
 	if db == "" || strings.ContainsAny(db, "*%") {
 		return fmt.Errorf("db 名 %q 含通配符，拒绝", db)
 	}
+	var variable, partialRevokes string
+	row := c.DB.QueryRowContext(ctx, "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'")
+	if err := row.Scan(&variable, &partialRevokes); errors.Is(err, sql.ErrNoRows) {
+		// MariaDB 和早期 MySQL 没有此变量，库级授权使用通配匹配。
+		partialRevokes = "OFF"
+	} else if err != nil {
+		return fmt.Errorf("读取 MySQL partial_revokes 失败: %w", err)
+	}
+	dbIdent, err := quoteGrantDatabase(db, partialRevokes)
+	if err != nil {
+		return err
+	}
 	// 单库的所有权限：ALL 但不带 GRANT OPTION。
 	// 站点用户能建表/改表/写数据，但不能再 GRANT 给别人（防止权限蔓延）
 	stmt := fmt.Sprintf("GRANT ALL PRIVILEGES ON %s.* TO %s@%s",
-		quoteIdent(db), quoteIdent(user), quoteIdent(host))
+		dbIdent, quoteIdent(user), quoteIdent(host))
 	if _, err := c.DB.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("GRANT: %w", err)
 	}
